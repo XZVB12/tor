@@ -548,7 +548,7 @@ static const config_var_t option_vars_[] = {
   V(LogTimeGranularity,          MSEC_INTERVAL, "1 second"),
   V(TruncateLogFile,             BOOL,     "0"),
   V_IMMUTABLE(SyslogIdentityTag, STRING,   NULL),
-  V_IMMUTABLE(AndroidIdentityTag,STRING,   NULL),
+  OBSOLETE("AndroidIdentityTag"),
   V(LongLivedPorts,              CSV,
         "21,22,706,1863,5050,5190,5222,5223,6523,6667,6697,8300"),
   VAR("MapAddress",              LINELIST, AddressMap,           NULL),
@@ -580,6 +580,7 @@ static const config_var_t option_vars_[] = {
   V(OutboundBindAddress,         LINELIST,   NULL),
   V(OutboundBindAddressOR,       LINELIST,   NULL),
   V(OutboundBindAddressExit,     LINELIST,   NULL),
+  V(OutboundBindAddressPT,       LINELIST,   NULL),
 
   OBSOLETE("PathBiasDisableRate"),
   V(PathBiasCircThreshold,       INT,      "-1"),
@@ -2104,6 +2105,16 @@ options_act,(const or_options_t *old_options))
              "in a non-anonymous mode. It will provide NO ANONYMITY.");
   }
 
+  /* 31851: OutboundBindAddressExit is relay-only */
+  if (parse_outbound_addresses(options, 0, &msg) < 0) {
+    // LCOV_EXCL_START
+    log_warn(LD_BUG, "Failed parsing previously validated outbound "
+             "bind addresses: %s", msg);
+    tor_free(msg);
+    return -1;
+    // LCOV_EXCL_STOP
+  }
+
   if (options->Bridges) {
     mark_bridge_list();
     for (cl = options->Bridges; cl; cl = cl->next) {
@@ -2263,16 +2274,6 @@ options_act,(const or_options_t *old_options))
                      http_authenticator, strlen(http_authenticator),
                      DIGEST_SHA256);
     tor_free(http_authenticator);
-  }
-
-  /* 31851: OutboundBindAddressExit is relay-only */
-  if (parse_outbound_addresses(options, 0, &msg) < 0) {
-    // LCOV_EXCL_START
-    log_warn(LD_BUG, "Failed parsing previously validated outbound "
-             "bind addresses: %s", msg);
-    tor_free(msg);
-    return -1;
-    // LCOV_EXCL_STOP
   }
 
   config_maybe_load_geoip_files_(options, old_options);
@@ -4934,15 +4935,19 @@ options_init_logs(const or_options_t *old_options, const or_options_t *options,
         goto cleanup;
       }
 
+      /* We added this workaround in 0.4.5.x; we can remove it in 0.4.6 or
+       * later */
       if (!strcasecmp(smartlist_get(elts, 0), "android")) {
-#ifdef HAVE_ANDROID_LOG_H
+#ifdef HAVE_SYSLOG_H
+        log_warn(LD_CONFIG, "The android logging API is no longer supported;"
+                            " adding a syslog instead. The 'android' logging "
+                            " type will no longer work in the future.");
         if (!validate_only) {
-          add_android_log(severity, options->AndroidIdentityTag);
+          add_syslog_log(severity, options->SyslogIdentityTag);
         }
 #else
-        log_warn(LD_CONFIG, "Android logging is not supported"
-                            " on this system. Sorry.");
-#endif /* defined(HAVE_ANDROID_LOG_H) */
+        log_warn(LD_CONFIG, "The android logging API is no longer supported.");
+#endif
         goto cleanup;
       }
     }
@@ -7180,7 +7185,8 @@ parse_outbound_address_lines(const config_line_t *lines, outbound_addr_t type,
                      "configured: %s",
                      family==AF_INET?" IPv4":(family==AF_INET6?" IPv6":""),
                      type==OUTBOUND_ADDR_OR?" OR":
-                     (type==OUTBOUND_ADDR_EXIT?" exit":""), lines->value);
+                     (type==OUTBOUND_ADDR_EXIT?" exit":
+                     (type==OUTBOUND_ADDR_PT?" PT":"")), lines->value);
       return -1;
     }
     lines = lines->next;
@@ -7203,7 +7209,7 @@ parse_outbound_addresses(or_options_t *options, int validate_only, char **msg)
   }
 
   if (parse_outbound_address_lines(options->OutboundBindAddress,
-                                   OUTBOUND_ADDR_EXIT_AND_OR, options,
+                                   OUTBOUND_ADDR_ANY, options,
                                    validate_only, msg) < 0) {
     goto err;
   }
@@ -7217,6 +7223,12 @@ parse_outbound_addresses(or_options_t *options, int validate_only, char **msg)
   if (parse_outbound_address_lines(options->OutboundBindAddressExit,
                                    OUTBOUND_ADDR_EXIT, options, validate_only,
                                    msg)  < 0) {
+    goto err;
+  }
+
+  if (parse_outbound_address_lines(options->OutboundBindAddressPT,
+                                   OUTBOUND_ADDR_PT, options, validate_only,
+                                   msg) < 0) {
     goto err;
   }
 

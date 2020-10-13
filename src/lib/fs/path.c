@@ -532,7 +532,7 @@ unglob_win32(const char *pattern, int prev_sep, int next_sep)
   tor_free(path_until_glob);
   return result;
 }
-#else /* !defined(_WIN32) */
+#elif HAVE_GLOB
 /** Same as opendir but calls sandbox_intern_string before */
 static DIR *
 prot_opendir(const char *name)
@@ -559,7 +559,7 @@ wrap_closedir(void *arg)
 {
   closedir(arg);
 }
-#endif /* defined(_WIN32) */
+#endif /* defined(HAVE_GLOB) */
 
 /** Return a new list containing the paths that match the pattern
  * <b>pattern</b>. Return NULL on error. On POSIX systems, errno is set by the
@@ -568,14 +568,15 @@ wrap_closedir(void *arg)
 struct smartlist_t *
 tor_glob(const char *pattern)
 {
-  smartlist_t *result;
+  smartlist_t *result = NULL;
+
 #ifdef _WIN32
   // PathMatchSpec does not support forward slashes, change them to backslashes
   char *pattern_normalized = tor_strdup(pattern);
   tor_strreplacechar(pattern_normalized, '/', *PATH_SEPARATOR);
   result = get_glob_paths(pattern_normalized, unglob_win32, true);
   tor_free(pattern_normalized);
-#else /* !(defined(_WIN32)) */
+#elif HAVE_GLOB /* !(defined(_WIN32)) */
   glob_t matches;
   int flags = GLOB_ERR | GLOB_NOSORT;
 #ifdef GLOB_ALTDIRFUNC
@@ -597,6 +598,12 @@ tor_glob(const char *pattern)
     return NULL;
   }
 
+  // #40141: workaround for bug in glibc < 2.19 where patterns ending in path
+  // separator match files and folders instead of folders only
+  size_t pattern_len = strlen(pattern);
+  bool dir_only = has_glob(pattern) &&
+                  pattern_len > 0 && pattern[pattern_len-1] == *PATH_SEPARATOR;
+
   result = smartlist_new();
   size_t i;
   for (i = 0; i < matches.gl_pathc; i++) {
@@ -605,10 +612,19 @@ tor_glob(const char *pattern)
     if (len > 0 && match[len-1] == *PATH_SEPARATOR) {
       match[len-1] = '\0';
     }
-    smartlist_add(result, match);
+
+    if (!dir_only || (dir_only && is_dir(file_status(match)))) {
+      smartlist_add(result, match);
+    } else {
+      tor_free(match);
+    }
   }
   globfree(&matches);
-#endif /* defined(_WIN32) */
+#else
+  (void)pattern;
+  return result;
+#endif /* !defined(HAVE_GLOB) */
+
   return result;
 }
 

@@ -652,12 +652,12 @@ static const size_t fn_address_table_auth_len =
  *     method_out is set to RESOLVED_ADDR_RESOLVED and hostname_out is set
  *     to the resolved hostname. On failure to resolve, an error is returned.
  *
- *     If no given Address, fallback to the local hostname (see section 2).
+ *     If no given Address, fallback to the network interface (see section 2).
  *
  *  2. Look at the network interface.
  *
  *     Attempt to find the first public usable address from the list of
- *     network interface returned by the OS.
+ *     network interfaces returned by the OS.
  *
  *     On failure, we attempt to look at the local hostname (3).
  *
@@ -787,7 +787,8 @@ MOCK_IMPL(bool,
 is_local_to_resolve_addr, (const tor_addr_t *addr))
 {
   const int family = tor_addr_family(addr);
-  const tor_addr_t *last_resolved_addr = &last_resolved_addrs[family];
+  const tor_addr_t *last_resolved_addr =
+    &last_resolved_addrs[af_to_idx(family)];
 
   /* Internal address is always local. */
   if (tor_addr_is_internal(addr, 0)) {

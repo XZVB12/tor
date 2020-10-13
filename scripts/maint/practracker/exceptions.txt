@@ -189,7 +189,7 @@ problem function-size /src/feature/client/entrynodes.c:entry_guard_parse_from_st
 problem file-size /src/feature/client/entrynodes.h 700
 problem function-size /src/feature/client/transports.c:handle_proxy_line() 108
 problem function-size /src/feature/client/transports.c:parse_method_line_helper() 110
-problem function-size /src/feature/client/transports.c:create_managed_proxy_environment() 111
+problem function-size /src/feature/client/transports.c:create_managed_proxy_environment() 140
 problem function-size /src/feature/control/control.c:connection_control_process_inbuf() 113
 problem function-size /src/feature/control/control_auth.c:handle_control_authenticate() 186
 problem function-size /src/feature/control/control_cmd.c:handle_control_extendcircuit() 150
@@ -201,7 +201,7 @@ problem function-size /src/feature/control/control_getinfo.c:getinfo_helper_misc
 problem function-size /src/feature/control/control_getinfo.c:getinfo_helper_dir() 297
 problem function-size /src/feature/control/control_getinfo.c:getinfo_helper_events() 237
 problem function-size /src/feature/dirauth/bwauth.c:dirserv_read_measured_bandwidths() 121
-problem file-size /src/feature/dirauth/dirvote.c 4734
+problem file-size /src/feature/dirauth/dirvote.c 4900
 problem include-count /src/feature/dirauth/dirvote.c 55
 problem function-size /src/feature/dirauth/dirvote.c:format_networkstatus_vote() 230
 problem function-size /src/feature/dirauth/dirvote.c:networkstatus_compute_bw_weights_v10() 233

@@ -24,10 +24,29 @@ struct config_suite_t;
 struct routerset_t;
 
 /** Enumeration of outbound address configuration types:
- * Exit-only, OR-only, or both */
-typedef enum {OUTBOUND_ADDR_EXIT, OUTBOUND_ADDR_OR,
-              OUTBOUND_ADDR_EXIT_AND_OR,
-              OUTBOUND_ADDR_MAX} outbound_addr_t;
+ * Exit-only, OR-only, PT-only, or any of them */
+typedef enum {
+  /** Outbound IP address for Exit connections. Controlled by the
+   * `OutboundBindAddressExit` configuration entry in torrc. */
+  OUTBOUND_ADDR_EXIT,
+
+  /** Outbound IP address for OR connections. Controlled by the
+   * `OutboundBindAddressOR` configuration entry in torrc. */
+  OUTBOUND_ADDR_OR,
+
+  /** Outbound IP address for PT connections. Controlled by the
+   * `OutboundBindAddressPT` configuration entry in torrc. */
+  OUTBOUND_ADDR_PT,
+
+  /** Outbound IP address for any outgoing connections. Controlled by the
+   * OutboundBindAddress configuration entry in torrc. This value is used as
+   * fallback if the more specific OUTBOUND_ADDR_EXIT, OUTBOUND_ADDR_OR, and
+   * OUTBOUND_ADDR_PT are unset. */
+  OUTBOUND_ADDR_ANY,
+
+  /** Max value for this enum. Must be the last element in this enum. */
+  OUTBOUND_ADDR_MAX
+} outbound_addr_t;
 
 /** Which protocol to use for TCPProxy. */
 typedef enum {
@@ -58,7 +77,6 @@ struct or_options_t {
   int TruncateLogFile; /**< Boolean: Should we truncate the log file
                             before we start writing? */
   char *SyslogIdentityTag; /**< Identity tag to add for syslog logging. */
-  char *AndroidIdentityTag; /**< Identity tag to add for Android logging. */
 
   char *DebugLogFile; /**< Where to send verbose log messages. */
   char *DataDirectory_option; /**< Where to store long-term data, as
@@ -131,6 +149,8 @@ struct or_options_t {
   struct config_line_t *OutboundBindAddressOR;
   /** Local address to bind outbound exit sockets */
   struct config_line_t *OutboundBindAddressExit;
+  /** Local address to bind outbound PT sockets */
+  struct config_line_t *OutboundBindAddressPT;
   /** Addresses derived from the various OutboundBindAddress lines.
    * [][0] is IPv4, [][1] is IPv6
    */

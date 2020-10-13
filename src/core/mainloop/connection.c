@@ -2331,9 +2331,9 @@ conn_get_outbound_address(sa_family_t family,
       ext_addr = &options->OutboundBindAddresses[OUTBOUND_ADDR_EXIT]
                  [fam_index];
     } else if (!tor_addr_is_null(
-                 &options->OutboundBindAddresses[OUTBOUND_ADDR_EXIT_AND_OR]
+                 &options->OutboundBindAddresses[OUTBOUND_ADDR_ANY]
                  [fam_index])) {
-      ext_addr = &options->OutboundBindAddresses[OUTBOUND_ADDR_EXIT_AND_OR]
+      ext_addr = &options->OutboundBindAddresses[OUTBOUND_ADDR_ANY]
                  [fam_index];
     }
   } else { // All non-exit connections
@@ -2342,9 +2342,9 @@ conn_get_outbound_address(sa_family_t family,
       ext_addr = &options->OutboundBindAddresses[OUTBOUND_ADDR_OR]
                  [fam_index];
     } else if (!tor_addr_is_null(
-                 &options->OutboundBindAddresses[OUTBOUND_ADDR_EXIT_AND_OR]
+                 &options->OutboundBindAddresses[OUTBOUND_ADDR_ANY]
                  [fam_index])) {
-      ext_addr = &options->OutboundBindAddresses[OUTBOUND_ADDR_EXIT_AND_OR]
+      ext_addr = &options->OutboundBindAddresses[OUTBOUND_ADDR_ANY]
                  [fam_index];
     }
   }
@@ -3224,7 +3224,14 @@ retry_all_listeners(smartlist_t *new_conns, int close_all_noncontrol)
                                                   &skip, &addr_in_use);
     }
 
-    tor_assert(new_conn);
+    /* There are many reasons why we can't open a new listener port so in case
+     * we hit those, bail early so tor can stop. */
+    if (!new_conn) {
+      log_warn(LD_NET, "Unable to create listener port: %s:%d",
+               fmt_addr(&r->new_port->addr), r->new_port->port);
+      retval = -1;
+      break;
+    }
 
     smartlist_add(new_conns, new_conn);
 
