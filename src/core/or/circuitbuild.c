@@ -574,6 +574,7 @@ circuit_handle_first_hop(origin_circuit_t *circ)
                           &firsthop->extend_info->ed_identity,
                           orport4 ? &orport4->addr : NULL,
                           orport6 ? &orport6->addr : NULL,
+                          true,
                           &msg,
                           &should_launch);
 
@@ -590,6 +591,11 @@ circuit_handle_first_hop(origin_circuit_t *circ)
         log_info(LD_CIRC,"connect to firsthop failed. Closing.");
         return -END_CIRC_REASON_CONNECTFAILED;
       }
+      /* We didn't find a channel, but we're launching one for an origin
+       * circuit.  (If we decided not to launch a channel, then we found at
+       * least one once good in-progress channel use for this circuit, and
+       * marked it in channel_get_for_extend().) */
+      channel_mark_as_used_for_origin_circuit(n_chan);
       circuit_chan_publish(circ, n_chan);
     }
 
@@ -602,6 +608,8 @@ circuit_handle_first_hop(origin_circuit_t *circ)
   } else { /* it's already open. use it. */
     tor_assert(!circ->base_.n_hop);
     circ->base_.n_chan = n_chan;
+    /* We found a channel, and we're using it for an origin circuit. */
+    channel_mark_as_used_for_origin_circuit(n_chan);
     circuit_chan_publish(circ, n_chan);
     log_debug(LD_CIRC,"Conn open for %s. Delivering first onion skin.",
               safe_str_client(extend_info_describe(firsthop->extend_info)));
@@ -770,27 +778,15 @@ circuit_deliver_create_cell,(circuit_t *circ,
   return -1;
 }
 
-/** Return true iff we should send a create_fast cell to start building a given
- * circuit */
-static inline int
+/** Return true iff we should send a create_fast cell to start building a
+ * given circuit */
+static inline bool
 should_use_create_fast_for_circuit(origin_circuit_t *circ)
 {
-  const or_options_t *options = get_options();
   tor_assert(circ->cpath);
   tor_assert(circ->cpath->extend_info);
 
-  if (!circuit_has_usable_onion_key(circ)) {
-    /* We don't have ntor, and we don't have or can't use TAP,
-     * so our hand is forced: only a create_fast will work. */
-    return 1;
-  }
-  if (public_server_mode(options)) {
-    /* We're a server, and we have a usable onion key. We can choose.
-     * Prefer to blend our circuit into the other circuits we are
-     * creating on behalf of others. */
-    return 0;
-  }
-  return networkstatus_get_param(NULL, "usecreatefast", 0, 0, 1);
+  return ! circuit_has_usable_onion_key(circ);
 }
 
 /**
