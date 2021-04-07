@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, The Tor Project, Inc. */
+/* Copyright (c) 2020-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -130,8 +130,16 @@ resolved_addr_set_suggested(const tor_addr_t *addr)
           tor_addr_family(addr) != AF_INET6)) {
     return;
   }
-  tor_addr_copy(&last_suggested_addrs[af_to_idx(tor_addr_family(addr))],
-                addr);
+
+  /* In case we don't have a configured address, log that we will be using the
+   * one discovered from the dirauth. */
+  const int idx = af_to_idx(tor_addr_family(addr));
+  if (tor_addr_is_null(&last_resolved_addrs[idx]) &&
+      !tor_addr_eq(&last_suggested_addrs[idx], addr)) {
+    log_notice(LD_CONFIG, "External address seen and suggested by a "
+                          "directory authority: %s", fmt_addr(addr));
+  }
+  tor_addr_copy(&last_suggested_addrs[idx], addr);
 }
 
 /** Copy the last resolved address of family into addr_out.
@@ -185,7 +193,19 @@ address_can_be_used(const tor_addr_t *addr, const or_options_t *options,
     goto allow;
   }
 
-  /* We have a private IP address. It is allowed only if we set custom
+  /* We allow internal addresses to be used if the PublishServerDescriptor is
+   * unset and AssumeReachable (or for IPv6) is set.
+   *
+   * This is to cover the case where a relay/bridge might be run behind a
+   * firewall on a local network to users can reach the network through it
+   * using Tor Browser for instance. */
+  if (options->PublishServerDescriptor_ == NO_DIRINFO &&
+      (options->AssumeReachable ||
+       (tor_addr_family(addr) == AF_INET6 && options->AssumeReachableIPv6))) {
+    goto allow;
+  }
+
+  /* We have a private IP address. This is also allowed if we set custom
    * directory authorities. */
   if (using_default_dir_authorities(options)) {
     log_fn(warn_severity, LD_CONFIG,
@@ -832,4 +852,4 @@ resolve_addr_reset_suggested(int family)
   tor_addr_make_unspec(&last_suggested_addrs[af_to_idx(family)]);
 }
 
-#endif /* TOR_UNIT_TESTS */
+#endif /* defined(TOR_UNIT_TESTS) */

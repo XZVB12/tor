@@ -73,7 +73,8 @@ TOR_UTIL_LIBS = \
 	src/lib/libtor-version.a \
 	src/lib/libtor-llharden.a \
 	src/lib/libtor-intmath.a \
-	src/lib/libtor-ctime.a
+	src/lib/libtor-ctime.a \
+	src/lib/libtor-metrics.a
 
 # Variants of the above for linking the testing variant of tor (for coverage
 # and tests)
@@ -108,7 +109,8 @@ TOR_UTIL_TESTING_LIBS = \
 	src/lib/libtor-version-testing.a \
 	src/lib/libtor-llharden-testing.a \
 	src/lib/libtor-intmath.a \
-	src/lib/libtor-ctime-testing.a
+	src/lib/libtor-ctime-testing.a \
+	src/lib/libtor-metrics-testing.a
 endif
 
 # Internal crypto libraries used in Tor
@@ -141,6 +143,7 @@ TOR_INTERNAL_LIBS = \
 libtor.a: $(TOR_INTERNAL_LIBS)
 	$(AM_V_AR) export AR="$(AR)"; \
 	export ARFLAGS="$(ARFLAGS)"; \
+	export RANLIB="$(RANLIB)"; \
 	$(top_srcdir)/scripts/build/combine_libs libtor.a $(TOR_INTERNAL_LIBS)
 
 MOSTLYCLEANFILES += libtor.a
@@ -722,3 +725,17 @@ show-libs:
 
 show-testing-libs:
 	@echo src/test/libtor-testing.a
+
+# Note here that we hardcode this -j2 because if the user would pass too many
+# cores, bear actually chockes and dies :S. For this to work, a make clean
+# needs to be done else bear will miss some compile flags.
+lsp:
+	@if test -x "`which bear 2>&1;true`"; then \
+		echo "Generating LSP compile_commands.json. Might take few minutes..."; \
+		$(MAKE) clean 2>&1 >/dev/null; \
+		bear >/dev/null 2>&1 -- $(MAKE) -j2 2>&1 >/dev/null; \
+		echo "Generating .ccls file..."; \
+		./scripts/maint/gen_ccls_file.sh \
+	else \
+		echo "No bear command found. On debian, apt install bear"; \
+	fi

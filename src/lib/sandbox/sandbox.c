@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -309,6 +309,8 @@ static int filter_nopar_gen[] = {
   seccomp_rule_add((ctx),(act),(call),3,(f1),(f2),(f3))
 #define seccomp_rule_add_4(ctx,act,call,f1,f2,f3,f4)      \
   seccomp_rule_add((ctx),(act),(call),4,(f1),(f2),(f3),(f4))
+
+static const char *sandbox_get_interned_string(const char *str);
 
 /**
  * Function responsible for setting up the rt_sigaction syscall for
@@ -732,7 +734,7 @@ sb_socket(scmp_filter_ctx ctx, sandbox_cfg_t *filter)
     SCMP_CMP(2, SCMP_CMP_EQ, IPPROTO_IP));
   if (rc)
     return rc;
-#endif
+#endif /* defined(ENABLE_NSS) */
 
   rc = seccomp_rule_add_3(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket),
       SCMP_CMP(0, SCMP_CMP_EQ, PF_UNIX),
@@ -1224,8 +1226,41 @@ static sandbox_filter_func_t filter_func[] = {
     sb_kill
 };
 
+/**
+ * Return the interned (and hopefully sandbox-permitted) string equal
+ * to @a str.
+ *
+ * Return NULL if `str` is NULL, or `str` is not an interned string.
+ **/
 const char *
 sandbox_intern_string(const char *str)
+{
+  const char *interned = sandbox_get_interned_string(str);
+
+  if (sandbox_active && str != NULL && interned == NULL) {
+    log_warn(LD_BUG, "No interned sandbox parameter found for %s", str);
+  }
+
+  return interned ? interned : str;
+}
+
+/**
+ * Return true if the sandbox is running and we are missing an interned string
+ * equal to @a str.
+ */
+bool
+sandbox_interned_string_is_missing(const char *str)
+{
+  return sandbox_active && sandbox_get_interned_string(str) == NULL;
+}
+
+/**
+ * Try to find and return the interned string equal to @a str.
+ *
+ * If there is no such string, return NULL.
+ **/
+static const char *
+sandbox_get_interned_string(const char *str)
 {
   sandbox_cfg_t *elem;
 
@@ -1245,9 +1280,7 @@ sandbox_intern_string(const char *str)
     }
   }
 
-  if (sandbox_active)
-    log_warn(LD_BUG, "No interned sandbox parameter found for %s", str);
-  return str;
+  return NULL;
 }
 
 /* DOCDOC */
@@ -1658,7 +1691,7 @@ get_syscall_from_ucontext(const ucontext_t *ctx)
 {
   return (int) ctx->uc_mcontext.M_SYSCALL;
 }
-#else
+#else /* !defined(SYSCALL_NAME_DEBUGGING) */
 static const char *
 get_syscall_name(int syscall_num)
 {
@@ -1671,7 +1704,7 @@ get_syscall_from_ucontext(const ucontext_t *ctx)
   (void) ctx;
   return -1;
 }
-#endif
+#endif /* defined(SYSCALL_NAME_DEBUGGING) */
 
 #ifdef USE_BACKTRACE
 #define MAX_DEPTH 256

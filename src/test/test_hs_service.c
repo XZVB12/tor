@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2020, The Tor Project, Inc. */
+/* Copyright (c) 2016-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -26,7 +26,6 @@
 #include "test/test.h"
 #include "test/test_helpers.h"
 #include "test/log_test_helpers.h"
-#include "test/rend_test_helpers.h"
 #include "test/hs_test_helpers.h"
 
 #include "core/or/or.h"
@@ -54,10 +53,10 @@
 #include "feature/hs/hs_ob.h"
 #include "feature/hs/hs_cell.h"
 #include "feature/hs/hs_intropoint.h"
+#include "feature/hs/hs_metrics.h"
 #include "feature/hs/hs_service.h"
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nodelist.h"
-#include "feature/rend/rendservice.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/fs/dir.h"
 
@@ -83,16 +82,18 @@
 static networkstatus_t mock_ns;
 
 static networkstatus_t *
-mock_networkstatus_get_live_consensus(time_t now)
+mock_networkstatus_get_reasonably_live_consensus(time_t now, int flavor)
 {
   (void) now;
+  (void) flavor;
   return &mock_ns;
 }
 
 static networkstatus_t *
-mock_networkstatus_get_live_consensus_null(time_t now)
+mock_networkstatus_get_reasonably_live_consensus_null(time_t now, int flavor)
 {
   (void) now;
+  (void) flavor;
   return NULL;
 }
 
@@ -158,7 +159,7 @@ mock_router_have_minimum_dir_info_false(void)
 }
 
 /* Helper: from a set of options in conf, configure a service which will add
- * it to the staging list of the HS subsytem. */
+ * it to the staging list of the HS subsystem. */
 static int
 helper_config_service(const char *conf)
 {
@@ -380,14 +381,13 @@ test_load_keys(void *arg)
 {
   int ret;
   char *conf = NULL;
-  char *hsdir_v2 = tor_strdup(get_fname("hs2"));
   char *hsdir_v3 = tor_strdup(get_fname("hs3"));
   char addr[HS_SERVICE_ADDR_LEN_BASE32 + 1];
 
   (void) arg;
 
-  /* We'll register two services, a v2 and a v3, then we'll load keys and
-   * validate that both are in a correct state. */
+  /* We'll register one service then we'll load keys and validate that both
+   * are in a correct state. */
 
   hs_init();
 
@@ -395,15 +395,6 @@ test_load_keys(void *arg)
   "HiddenServiceDir %s\n" \
   "HiddenServiceVersion %d\n" \
   "HiddenServicePort 65535\n"
-
-  /* v2 service. */
-  tor_asprintf(&conf, conf_fmt, hsdir_v2, HS_VERSION_TWO);
-  ret = helper_config_service(conf);
-  tor_free(conf);
-  tt_int_op(ret, OP_EQ, 0);
-  /* This one should now be registered into the v2 list. */
-  tt_int_op(get_hs_service_staging_list_size(), OP_EQ, 0);
-  tt_int_op(rend_num_services(), OP_EQ, 1);
 
   /* v3 service. */
   tor_asprintf(&conf, conf_fmt, hsdir_v3, HS_VERSION_THREE);
@@ -438,7 +429,6 @@ test_load_keys(void *arg)
   tt_assert(!s->config.is_client_auth_enabled);
 
  done:
-  tor_free(hsdir_v2);
   tor_free(hsdir_v3);
   hs_free_all();
 }
@@ -631,8 +621,8 @@ test_access_service(void *arg)
 
   (void) arg;
 
-  /* We'll register two services, a v2 and a v3, then we'll load keys and
-   * validate that both are in a correct state. */
+  /* We'll register one service then we'll load keys and validate that both
+   * are in a correct state. */
 
   hs_init();
 
@@ -664,6 +654,7 @@ test_access_service(void *arg)
   tt_mem_op(query, OP_EQ, s, sizeof(hs_service_t));
   /* Remove service, check if it actually works and then put it back. */
   remove_service(global_map, s);
+  hs_metrics_service_free(s);
   tt_int_op(get_hs_service_map_size(), OP_EQ, 0);
   query = find_service(global_map, &s->keys.identity_pk);
   tt_ptr_op(query, OP_EQ, NULL);
@@ -673,6 +664,7 @@ test_access_service(void *arg)
   tt_int_op(ret, OP_EQ, 0);
   tt_int_op(get_hs_service_map_size(), OP_EQ, 1);
   /* Twice should fail. */
+  hs_metrics_service_free(s); /* Avoid BUG() on metrics init. */
   ret = register_service(global_map, s);
   tt_int_op(ret, OP_EQ, -1);
   /* Remove service from map so we don't double free on cleanup. */
@@ -775,7 +767,7 @@ mock_node_get_by_id(const char *digest)
 {
   (void) digest;
   memset(mock_node.identity, 'A', DIGEST_LEN);
-  /* Only return the matchin identity of As */
+  /* Only return the matching identity of As */
   if (!tor_memcmp(mock_node.identity, digest, DIGEST_LEN)) {
     return &mock_node;
   }
@@ -1375,8 +1367,8 @@ test_rotate_descriptors(void *arg)
   hs_init();
   MOCK(get_or_state, get_or_state_replacement);
   MOCK(circuit_mark_for_close_, mock_circuit_mark_for_close);
-  MOCK(networkstatus_get_live_consensus,
-       mock_networkstatus_get_live_consensus);
+  MOCK(networkstatus_get_reasonably_live_consensus,
+       mock_networkstatus_get_reasonably_live_consensus);
 
   /* Descriptor rotation happens with a consensus with a new SRV. */
 
@@ -1464,7 +1456,7 @@ test_rotate_descriptors(void *arg)
   hs_free_all();
   UNMOCK(get_or_state);
   UNMOCK(circuit_mark_for_close_);
-  UNMOCK(networkstatus_get_live_consensus);
+  UNMOCK(networkstatus_get_reasonably_live_consensus);
 }
 
 /** Test building descriptors: picking intro points, setting up their link
@@ -1484,8 +1476,8 @@ test_build_update_descriptors(void *arg)
 
   MOCK(get_or_state,
        get_or_state_replacement);
-  MOCK(networkstatus_get_live_consensus,
-       mock_networkstatus_get_live_consensus);
+  MOCK(networkstatus_get_reasonably_live_consensus,
+       mock_networkstatus_get_reasonably_live_consensus);
 
   dummy_state = or_state_new();
 
@@ -1713,8 +1705,8 @@ test_build_descriptors(void *arg)
 
   MOCK(get_or_state,
        get_or_state_replacement);
-  MOCK(networkstatus_get_live_consensus,
-       mock_networkstatus_get_live_consensus);
+  MOCK(networkstatus_get_reasonably_live_consensus,
+       mock_networkstatus_get_reasonably_live_consensus);
 
   dummy_state = or_state_new();
 
@@ -1814,8 +1806,8 @@ test_upload_descriptors(void *arg)
   hs_init();
   MOCK(get_or_state,
        get_or_state_replacement);
-  MOCK(networkstatus_get_live_consensus,
-       mock_networkstatus_get_live_consensus);
+  MOCK(networkstatus_get_reasonably_live_consensus,
+       mock_networkstatus_get_reasonably_live_consensus);
 
   dummy_state = or_state_new();
 
@@ -2551,8 +2543,8 @@ test_cannot_upload_descriptors(void *arg)
   hs_init();
   MOCK(get_or_state,
        get_or_state_replacement);
-  MOCK(networkstatus_get_live_consensus,
-       mock_networkstatus_get_live_consensus);
+  MOCK(networkstatus_get_reasonably_live_consensus,
+       mock_networkstatus_get_reasonably_live_consensus);
 
   dummy_state = or_state_new();
 
@@ -2628,17 +2620,17 @@ test_cannot_upload_descriptors(void *arg)
 
   /* 4. Testing missing live consensus. */
   {
-    MOCK(networkstatus_get_live_consensus,
-         mock_networkstatus_get_live_consensus_null);
+    MOCK(networkstatus_get_reasonably_live_consensus,
+         mock_networkstatus_get_reasonably_live_consensus_null);
     setup_full_capture_of_logs(LOG_INFO);
     run_upload_descriptor_event(now);
     expect_log_msg_containing(
       "Service [scrubbed] can't upload its current descriptor: "
-      "No live consensus");
+      "No reasonably live consensus");
     teardown_capture_of_logs();
     /* Reset. */
-    MOCK(networkstatus_get_live_consensus,
-         mock_networkstatus_get_live_consensus);
+    MOCK(networkstatus_get_reasonably_live_consensus,
+         mock_networkstatus_get_reasonably_live_consensus);
   }
 
   /* 5. Test missing minimum directory information. */
@@ -2677,7 +2669,7 @@ test_cannot_upload_descriptors(void *arg)
  done:
   hs_free_all();
   UNMOCK(count_desc_circuit_established);
-  UNMOCK(networkstatus_get_live_consensus);
+  UNMOCK(networkstatus_get_reasonably_live_consensus);
   UNMOCK(get_or_state);
 }
 

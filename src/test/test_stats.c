@@ -1,6 +1,6 @@
 /* Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -12,6 +12,8 @@
 #include "lib/crypt_ops/crypto_rand.h"
 #include "app/config/or_state_st.h"
 #include "test/rng_test_helpers.h"
+#include "feature/hs/hs_cache.h"
+#include "test/hs_test_helpers.h"
 
 #include <stdio.h>
 
@@ -31,6 +33,8 @@
 #define MAINLOOP_PRIVATE
 #define STATEFILE_PRIVATE
 #define BWHIST_PRIVATE
+#define REPHIST_PRIVATE
+#define ROUTER_PRIVATE
 
 #include "core/or/or.h"
 #include "lib/err/backtrace.h"
@@ -45,6 +49,7 @@
 #include "app/config/statefile.h"
 #include "feature/stats/bwhist.h"
 #include "feature/stats/bw_array_st.h"
+#include "feature/relay/router.h"
 
 /** Run unit tests for some stats code. */
 static void
@@ -493,6 +498,358 @@ test_get_bandwidth_lines(void *arg)
   bwhist_free_all();
 }
 
+static bool
+mock_should_collect_v3_stats(void)
+{
+  return true;
+}
+
+/* Test v3 metrics */
+static void
+test_rephist_v3_onions(void *arg)
+{
+  int ret;
+
+  char *stats_string = NULL;
+  char *desc1_str = NULL;
+  ed25519_keypair_t signing_kp1;
+  hs_descriptor_t *desc1 = NULL;
+
+  const hs_v3_stats_t *hs_v3_stats = NULL;
+
+  (void) arg;
+
+  MOCK(should_collect_v3_stats, mock_should_collect_v3_stats);
+
+  get_options_mutable()->HiddenServiceStatistics = 1;
+
+  /* Initialize the subsystems */
+  hs_cache_init();
+  rep_hist_hs_stats_init(0);
+
+  /* Change time to 03-01-2002 23:36 UTC */
+  update_approx_time(1010101010);
+
+  /* HS stats should be zero here */
+  hs_v3_stats = rep_hist_get_hs_v3_stats();
+  tt_int_op(digest256map_size(hs_v3_stats->v3_onions_seen_this_period),
+            OP_EQ, 0);
+
+  /* Generate a valid descriptor */
+  ret = ed25519_keypair_generate(&signing_kp1, 0);
+  tt_int_op(ret, OP_EQ, 0);
+  desc1 = hs_helper_build_hs_desc_with_rev_counter(&signing_kp1, 42);
+  tt_assert(desc1);
+  ret = hs_desc_encode_descriptor(desc1, &signing_kp1, NULL, &desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+
+  /* Store descriptor and check that stats got updated */
+  ret = hs_cache_store_as_dir(desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+  hs_v3_stats = rep_hist_get_hs_v3_stats();
+  tt_int_op(digest256map_size(hs_v3_stats->v3_onions_seen_this_period),
+            OP_EQ, 1);
+
+  /* cleanup */
+  hs_descriptor_free(desc1);
+  tor_free(desc1_str);
+
+  /* Generate another valid descriptor */
+  ret = ed25519_keypair_generate(&signing_kp1, 0);
+  tt_int_op(ret, OP_EQ, 0);
+  desc1 = hs_helper_build_hs_desc_with_rev_counter(&signing_kp1, 42);
+  tt_assert(desc1);
+  ret = hs_desc_encode_descriptor(desc1, &signing_kp1, NULL, &desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+
+  /* Store descriptor and check that stats are updated */
+  ret = hs_cache_store_as_dir(desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+  hs_v3_stats = rep_hist_get_hs_v3_stats();
+  tt_int_op(digest256map_size(hs_v3_stats->v3_onions_seen_this_period),
+            OP_EQ, 2);
+
+  /* Check that storing the same descriptor twice does not work */
+  ret = hs_cache_store_as_dir(desc1_str);
+  tt_int_op(ret, OP_EQ, -1);
+
+  /* cleanup */
+  hs_descriptor_free(desc1);
+  tor_free(desc1_str);
+
+  /* Create a descriptor with the same identity key but diff rev counter and
+     same blinded key */
+  desc1 = hs_helper_build_hs_desc_with_rev_counter(&signing_kp1, 43);
+  tt_assert(desc1);
+  ret = hs_desc_encode_descriptor(desc1, &signing_kp1, NULL, &desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+
+  /* Store descriptor and check that stats are updated */
+  ret = hs_cache_store_as_dir(desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+  tt_int_op(digest256map_size(hs_v3_stats->v3_onions_seen_this_period),
+            OP_EQ, 2);
+
+  /* cleanup */
+  hs_descriptor_free(desc1);
+  tor_free(desc1_str);
+
+  /* Now let's skip to four days forward so that the blinded key rolls
+     forward */
+  update_approx_time(approx_time() + 345600);
+
+  /* Now create a descriptor with the same identity key but diff rev counter
+     and different blinded key */
+  desc1 = hs_helper_build_hs_desc_with_rev_counter(&signing_kp1, 44);
+  tt_assert(desc1);
+  ret = hs_desc_encode_descriptor(desc1, &signing_kp1, NULL, &desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+
+  /* Store descriptor and check that stats are updated */
+  ret = hs_cache_store_as_dir(desc1_str);
+  tt_int_op(ret, OP_EQ, 0);
+  tt_int_op(digest256map_size(hs_v3_stats->v3_onions_seen_this_period),
+            OP_EQ, 3);
+
+  /* cleanup */
+  hs_descriptor_free(desc1);
+  tor_free(desc1_str);
+
+  /* Because of differential privacy we can't actually check the stat value,
+     but let's just check that it's formatted correctly. */
+  stats_string = rep_hist_format_hs_stats(approx_time(), true);
+  tt_assert(strstr(stats_string, "hidserv-dir-v3-onions-seen"));
+
+ done:
+  UNMOCK(should_collect_v3_stats);
+  tor_free(stats_string);
+}
+
+static void
+test_load_stats_file(void *arg)
+{
+  int ret;
+  char *content = NULL, *read_file_content = NULL, *fname = NULL;
+
+  (void) arg;
+
+  /* Load conn-stats. */
+  fname = get_datadir_fname("conn-stats");
+  tt_assert(fname);
+  read_file_content = tor_strdup(
+    "conn-bi-direct 2020-12-13 15:48:53 (86400 s) 12,34,56,78\n"
+    "ipv6-conn-bi-direct 2020-12-14 15:48:53 (86400 s) 21,43,65,87\n");
+  write_str_to_file(fname, read_file_content, 0);
+  ret = load_stats_file("conn-stats", "conn-bi-direct", 1607874000, &content);
+  tt_int_op(ret, OP_EQ, 1);
+  tt_str_op(read_file_content, OP_EQ, content);
+
+  /* Load hidserv-stats. */
+  tor_free(fname);
+  fname = get_datadir_fname("hidserv-stats");
+  tt_assert(fname);
+  tor_free(read_file_content);
+  read_file_content = tor_strdup(
+    "hidserv-stats-end 2020-12-13 15:48:53 (86400 s)\n"
+    "hidserv-rend-relayed-cells 48754891 delta_f=2048 epsilon=0.30 "
+      "bin_size=1024\n"
+    "hidserv-dir-onions-seen 53 delta_f=8 epsilon=0.30 bin_size=8\n");
+  write_str_to_file(fname, read_file_content, 0);
+  tor_free(content);
+  ret = load_stats_file("hidserv-stats", "hidserv-stats-end", 1607874000,
+                        &content);
+  tt_int_op(ret, OP_EQ, 1);
+  tt_str_op(read_file_content, OP_EQ, content);
+
+  /* Load dirreq-stats. */
+  tor_free(fname);
+  fname = get_datadir_fname("dirreq-stats");
+  tt_assert(fname);
+  tor_free(read_file_content);
+  read_file_content = tor_strdup(
+    "dirreq-stats-end 2020-12-13 15:48:53 (86400 s)\n"
+    "dirreq-v3-ips ru=1728,us=1144,de=696,ir=432,gb=328,fr=304,in=296,ua=232\n"
+    "dirreq-v3-reqs ru=3616,us=3576,de=1896,fr=800,gb=632,ir=616\n"
+    "dirreq-v3-resp ok=18472,not-enough-sigs=0,unavailable=0,not-found=0,"
+      "not-modified=3136,busy=0\n"
+    "dirreq-v3-direct-dl complete=0,timeout=0,running=0\n"
+    "dirreq-v3-tunneled-dl complete=18124,timeout=348,running=4,min=257,"
+      "d1=133653,d2=221050,q1=261242,d3=300622,d4=399758,md=539051,d6=721322,"
+      "d7=959866,q3=1103363,d8=1302035,d9=2046125,max=113404000\n");
+  write_str_to_file(fname, read_file_content, 0);
+  tor_free(content);
+  ret = load_stats_file("dirreq-stats", "dirreq-stats-end", 1607874000,
+                        &content);
+  tt_int_op(ret, OP_EQ, 1);
+  tt_str_op(read_file_content, OP_EQ, content);
+
+  /* Attempt to load future-stats file not starting with timestamp tag. */
+  tor_free(fname);
+  fname = get_datadir_fname("future-stats");
+  tt_assert(fname);
+  tor_free(read_file_content);
+  read_file_content = tor_strdup(
+    "future-stuff-at-file-start\n"
+    "future-stats 2020-12-13 15:48:53 (86400 s)\n");
+  write_str_to_file(fname, read_file_content, 0);
+  tor_free(content);
+  ret = load_stats_file("future-stats", "future-stats", 1607874000, &content);
+  tt_int_op(ret, OP_EQ, 1);
+  tt_str_op(read_file_content, OP_EQ, content);
+
+ done:
+  tor_free(fname);
+  tor_free(read_file_content);
+  tor_free(content);
+}
+
+/** Test the overload stats logic. */
+static void
+test_overload_stats(void *arg)
+{
+  time_t current_time = 1010101010;
+  char *stats_str = NULL;
+  (void) arg;
+
+  /* Change time to 03-01-2002 23:36 UTC */
+  /* This should make the extrainfo timestamp be "2002-01-03 23:00:00" */
+  update_approx_time(current_time);
+
+  /* With an empty rephist we shouldn't get anything back */
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_assert(!stats_str);
+
+  /* Note a DNS overload */
+  rep_hist_note_overload(OVERLOAD_GENERAL);
+
+  /* Move the time forward one hour */
+  current_time += 3600;
+  update_approx_time(current_time);
+
+  /* Now check the string */
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-03 23:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Move the time forward 72 hours: see that the line has disappeared. */
+  current_time += 3600*72;
+  update_approx_time(current_time);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_assert(!stats_str);
+
+  /* Now the time should be 2002-01-07 00:00:00 */
+
+  /* Note a DNS overload */
+  rep_hist_note_overload(OVERLOAD_GENERAL);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-07 00:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Also note an fd exhaustion event */
+  rep_hist_note_overload(OVERLOAD_FD_EXHAUSTED);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-07 00:00:00\n"
+            "overload-fd-exhausted 1 2002-01-07 00:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Move the time forward. Register DNS overload. See that the time changed */
+  current_time += 3600*2;
+  update_approx_time(current_time);
+
+  rep_hist_note_overload(OVERLOAD_GENERAL);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-07 02:00:00\n"
+            "overload-fd-exhausted 1 2002-01-07 00:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Move the time forward. Register a bandwidth ratelimit event. See that the
+     string is added */
+  current_time += 3600*2;
+  update_approx_time(current_time);
+
+  /* Register the rate limit event */
+  rep_hist_note_overload(OVERLOAD_READ);
+  /* Also set some rate limiting values that should be reflected on the log */
+  get_options_mutable()->BandwidthRate = 1000;
+  get_options_mutable()->BandwidthBurst = 2000;
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-07 02:00:00\n"
+            "overload-ratelimits 1 2002-01-07 04:00:00 1000 2000 1 0\n"
+            "overload-fd-exhausted 1 2002-01-07 00:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Move the time forward 24 hours: no rate limit line anymore. */
+  current_time += 3600*24;
+  update_approx_time(current_time);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-07 02:00:00\n"
+            "overload-fd-exhausted 1 2002-01-07 00:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Move the time forward 44 hours: no fd exhausted line anymore. */
+  current_time += 3600*44;
+  update_approx_time(current_time);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-general 1 2002-01-07 02:00:00\n", OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Move the time forward 2 hours: there is nothing left. */
+  current_time += 3600*2;
+  update_approx_time(current_time);
+
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_assert(!stats_str);
+
+  /* Now test the rate-limit rate-limiter ;) */
+  for (int i = 0; i < 10; i++) {
+    rep_hist_note_overload(OVERLOAD_READ);
+  }
+  /* We already have an event registered from the previous tests. We just
+   * registered ten more overload events, but only one should have been counted
+   * because of the rate limiter */
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-ratelimits 1 2002-01-10 02:00:00 1000 2000 2 0\n",
+            OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Increment time by 59 secs and try again. No additional events should
+     register */
+  current_time += 59;
+  update_approx_time(current_time);
+
+  for (int i = 0; i < 10; i++) {
+    rep_hist_note_overload(OVERLOAD_READ);
+  }
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-ratelimits 1 2002-01-10 02:00:00 1000 2000 2 0\n",
+            OP_EQ, stats_str);
+  tor_free(stats_str);
+
+  /* Now increment time by 2 secs -- taking it after the minute rate limiting
+     and see that events will register again */
+  current_time += 2;
+  update_approx_time(current_time);
+
+  for (int i = 0; i < 10; i++) {
+    rep_hist_note_overload(OVERLOAD_READ);
+    rep_hist_note_overload(OVERLOAD_WRITE);
+  }
+  stats_str = rep_hist_get_overload_stats_lines();
+  tt_str_op("overload-ratelimits 1 2002-01-10 02:00:00 1000 2000 3 1\n",
+            OP_EQ, stats_str);
+  tor_free(stats_str);
+
+ done:
+  tor_free(stats_str);
+}
+
 #define ENT(name)                                                       \
   { #name, test_ ## name , 0, NULL, NULL }
 #define FORK(name)                                                      \
@@ -506,6 +863,9 @@ struct testcase_t stats_tests[] = {
   FORK(add_obs),
   FORK(fill_bandwidth_history),
   FORK(get_bandwidth_lines),
+  FORK(rephist_v3_onions),
+  FORK(load_stats_file),
+  FORK(overload_stats),
 
   END_OF_TESTCASES
 };

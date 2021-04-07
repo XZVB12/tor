@@ -1,6 +1,6 @@
 /* Copyright (c) 2003-2004, Roger Dingledine
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -2126,7 +2126,7 @@ tor_addr_port_copy(tor_addr_port_t *dest,
   memcpy(dest, source, sizeof(tor_addr_port_t));
 }
 
-/** Return true if <b>string</b> represents a valid IPv4 adddress in
+/** Return true if <b>string</b> represents a valid IPv4 address in
  * 'a.b.c.d' form.
  */
 int

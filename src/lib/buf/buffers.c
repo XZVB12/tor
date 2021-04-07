@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -14,7 +14,7 @@
  *
  * All socket-backed and TLS-based connection_t objects have a pair of
  * buffers: one for incoming data, and one for outcoming data.  These are fed
- * and drained from functions in connection.c, trigged by events that are
+ * and drained from functions in connection.c, triggered by events that are
  * monitored in main.c.
  *
  * This module only handles the buffer implementation itself. To use a buffer

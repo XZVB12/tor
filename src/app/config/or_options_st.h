@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -164,6 +164,8 @@ struct or_options_t {
   struct config_line_t *ORPort_lines;
   /** Ports to listen on for extended OR connections. */
   struct config_line_t *ExtORPort_lines;
+  /** Ports to listen on for Metrics connections. */
+  struct config_line_t *MetricsPort_lines;
   /** Ports to listen on for SOCKS connections. */
   struct config_line_t *SocksPort_lines;
   /** Ports to listen on for transparent pf/netfilter connections. */
@@ -223,6 +225,7 @@ struct or_options_t {
   unsigned int DNSPort_set : 1;
   unsigned int ExtORPort_set : 1;
   unsigned int HTTPTunnelPort_set : 1;
+  unsigned int MetricsPort_set : 1;
   /**@}*/
 
   /** Whether to publish our descriptor regardless of all our self-tests
@@ -333,7 +336,7 @@ struct or_options_t {
   /* Makes hidden service clients and servers non-anonymous on this tor
    * instance. Allows the non-anonymous HiddenServiceSingleHopMode. Enables
    * non-anonymous behaviour in the hidden service protocol.
-   * Use rend_service_non_anonymous_mode_enabled() instead of using this option
+   * Use hs_service_non_anonymous_mode_enabled() instead of using this option
    * directly.
    */
   int HiddenServiceNonAnonymousMode;
@@ -425,9 +428,6 @@ struct or_options_t {
   int NumCPUs; /**< How many CPUs should we try to use? */
   struct config_line_t *RendConfigLines; /**< List of configuration lines
                                           * for rendezvous services. */
-  struct config_line_t *HidServAuth; /**< List of configuration lines for
-                               * client-side authorizations for hidden
-                               * services */
   char *ClientOnionAuthDir; /**< Directory to keep client
                              * onion service authorization secret keys */
   char *ContactInfo; /**< Contact info to be published in the directory. */
@@ -673,6 +673,9 @@ struct or_options_t {
 
   /** If true, include statistics file contents in extra-info documents. */
   int ExtraInfoStatistics;
+
+  /** If true, include overload statistics in extra-info documents. */
+  int OverloadStatistics;
 
   /** If true, do not believe anybody who tells us that a domain resolves
    * to an internal address, or that an internal address has a PTR mapping.
@@ -1028,39 +1031,17 @@ struct or_options_t {
    */
   int DisableSignalHandlers;
 
-  /** Autobool: Is the circuit creation DoS mitigation subsystem enabled? */
-  int DoSCircuitCreationEnabled;
-  /** Minimum concurrent connection needed from one single address before any
-   * defense is used. */
-  int DoSCircuitCreationMinConnections;
-  /** Circuit rate used to refill the token bucket. */
-  int DoSCircuitCreationRate;
-  /** Maximum allowed burst of circuits. Reaching that value, the address is
-   * detected as malicious and a defense might be used. */
-  int DoSCircuitCreationBurst;
-  /** When an address is marked as malicous, what defense should be used
-   * against it. See the dos_cc_defense_type_t enum. */
-  int DoSCircuitCreationDefenseType;
-  /** For how much time (in seconds) the defense is applicable for a malicious
-   * address. A random time delta is added to the defense time of an address
-   * which will be between 1 second and half of this value. */
-  int DoSCircuitCreationDefenseTimePeriod;
-
-  /** Autobool: Is the DoS connection mitigation subsystem enabled? */
-  int DoSConnectionEnabled;
-  /** Maximum concurrent connection allowed per address. */
-  int DoSConnectionMaxConcurrentCount;
-  /** When an address is reaches the maximum count, what defense should be
-   * used against it. See the dos_conn_defense_type_t enum. */
-  int DoSConnectionDefenseType;
-
-  /** Autobool: Do we refuse single hop client rendezvous? */
-  int DoSRefuseSingleHopClientRendezvous;
-
   /** Interval: how long without activity does it take for a client
    * to become dormant?
    **/
   int DormantClientTimeout;
+
+  /**
+   * Boolean: If enabled, then we consider the timeout when deciding whether
+   * to be dormant.  If not enabled, then only the SIGNAL ACTIVE/DORMANT
+   * controls can change our status.
+   **/
+  int DormantTimeoutEnabled;
 
   /** Boolean: true if having an idle stream is sufficient to prevent a client
    * from becoming dormant.
@@ -1075,6 +1056,9 @@ struct or_options_t {
    * a possible previous dormant state.
    **/
   int DormantCanceledByStartup;
+
+  /** List of policy allowed to query the Metrics port. */
+  struct config_line_t *MetricsPortPolicy;
 
   /**
    * Configuration objects for individual modules.

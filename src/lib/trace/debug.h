@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2020, The Tor Project, Inc. */
+/* Copyright (c) 2017-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -20,7 +20,7 @@
 /* Send every event to a debug log level. This is useful to debug new trace
  * events without implementing them for a specific event tracing framework.
  *
- * NOTE: arguments can't be used becaue there is no easy generic ways to learn
+ * NOTE: arguments can't be used because there is no easy generic ways to learn
  * their type and amount. It is probably doable with massive C pre-processor
  * trickery but this is meant to be simple. */
 
@@ -28,7 +28,7 @@
   log_debug(LD_GENERAL, "Tracepoint \"" XSTR(event_name) "\" from " \
                         "subsystem \"" XSTR(subsystem) "\" hit.")
 
-#else /* defined(USE_TRACING_INSTRUMENTATION_LOG_DEBUG) */
+#else /* !defined(USE_TRACING_INSTRUMENTATION_LOG_DEBUG) */
 
 /* NOP the debug event. */
 #define TOR_TRACE_LOG_DEBUG(subsystem, name, ...)

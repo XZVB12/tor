@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -638,7 +638,7 @@ ed_key_init_from_file(const char *fname, uint32_t flags,
     bad_cert = 1;
   } else if (signing_key && cert->signing_key_included &&
              ! ed25519_pubkey_eq(&signing_key->pubkey, &cert->signing_key)) {
-    tor_log(severity, LD_OR, "Certificate signed by unexpectd key!");
+    tor_log(severity, LD_OR, "Certificate signed by unexpected key!");
     bad_cert = 1;
   }
 

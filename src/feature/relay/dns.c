@@ -1,6 +1,6 @@
 /* Copyright (c) 2003-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -63,6 +63,7 @@
 #include "feature/relay/dns.h"
 #include "feature/relay/router.h"
 #include "feature/relay/routermode.h"
+#include "feature/stats/rephist.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/evloop/compat_libevent.h"
 #include "lib/sandbox/sandbox.h"
@@ -1547,6 +1548,16 @@ evdns_callback(int result, char type, int count, int ttl, void *addresses,
 
   tor_addr_make_unspec(&addr);
 
+  /* Note down any DNS errors to the statistics module */
+  if (result == DNS_ERR_TIMEOUT) {
+    /* libevent timed out while resolving a name. However, because libevent
+     * handles retries and timeouts internally, this means that all attempts of
+     * libevent timed out. If we wanted to get more granular information about
+     * individual libevent attempts, we would have to implement our own DNS
+     * timeout/retry logic */
+    rep_hist_note_overload(OVERLOAD_GENERAL);
+  }
+
   /* Keep track of whether IPv6 is working */
   if (type == DNS_IPv6_AAAA) {
     if (result == DNS_ERR_TIMEOUT) {
@@ -1691,7 +1702,7 @@ launch_one_resolve(const char *address, uint8_t query_type,
       log_warn(LD_BUG, "Called with PTR query and unexpected address family");
     break;
   default:
-    log_warn(LD_BUG, "Called with unexpectd query type %d", (int)query_type);
+    log_warn(LD_BUG, "Called with unexpected query type %d", (int)query_type);
     break;
   }
 

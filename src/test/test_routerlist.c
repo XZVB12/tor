@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2020, The Tor Project, Inc. */
+/* Copyright (c) 2014-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 #include "orconfig.h"
@@ -51,8 +51,6 @@
 #include "test/test.h"
 #include "test/test_dir_common.h"
 #include "test/log_test_helpers.h"
-
-void construct_consensus(char **consensus_text_md, time_t now);
 
 static authority_cert_t *mock_cert;
 
@@ -150,7 +148,7 @@ test_routerlist_launch_descriptor_downloads(void *arg)
   smartlist_free(downloadable);
 }
 
-void
+static void
 construct_consensus(char **consensus_text_md, time_t now)
 {
   networkstatus_t *vote = NULL;

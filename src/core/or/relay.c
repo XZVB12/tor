@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -78,11 +78,12 @@
 #include "core/or/reasons.h"
 #include "core/or/relay.h"
 #include "core/crypto/relay_crypto.h"
-#include "feature/rend/rendcache.h"
 #include "feature/rend/rendcommon.h"
 #include "feature/nodelist/describe.h"
 #include "feature/nodelist/routerlist.h"
 #include "core/or/scheduler.h"
+#include "feature/hs/hs_metrics.h"
+#include "feature/stats/rephist.h"
 
 #include "core/or/cell_st.h"
 #include "core/or/cell_queue_st.h"
@@ -1689,6 +1690,13 @@ handle_relay_cell_command(cell_t *cell, circuit_t *circ,
         circuit_read_valid_data(TO_ORIGIN_CIRCUIT(circ), rh->length);
       }
 
+      /* For onion service connection, update the metrics. */
+      if (conn->hs_ident) {
+        hs_metrics_app_write_bytes(&conn->hs_ident->identity_pk,
+                                   conn->hs_ident->orig_virtual_port,
+                                   rh->length);
+      }
+
       stats_n_data_bytes_received += rh->length;
       connection_buf_add((char*)(cell->payload + RELAY_HEADER_SIZE),
                               rh->length, TO_CONN(conn));
@@ -2703,8 +2711,8 @@ cell_queues_check_size(void)
   alloc += half_streams_get_total_allocation();
   alloc += buf_get_total_allocation();
   alloc += tor_compress_get_total_allocation();
-  const size_t rend_cache_total = rend_cache_get_total_allocation();
-  alloc += rend_cache_total;
+  const size_t hs_cache_total = hs_cache_get_total_allocation();
+  alloc += hs_cache_total;
   const size_t geoip_client_cache_total =
     geoip_client_cache_total_allocation();
   alloc += geoip_client_cache_total;
@@ -2713,12 +2721,15 @@ cell_queues_check_size(void)
   if (alloc >= get_options()->MaxMemInQueues_low_threshold) {
     last_time_under_memory_pressure = approx_time();
     if (alloc >= get_options()->MaxMemInQueues) {
+      /* Note this overload down */
+      rep_hist_note_overload(OVERLOAD_GENERAL);
+
       /* If we're spending over 20% of the memory limit on hidden service
        * descriptors, free them until we're down to 10%. Do the same for geoip
        * client cache. */
-      if (rend_cache_total > get_options()->MaxMemInQueues / 5) {
+      if (hs_cache_total > get_options()->MaxMemInQueues / 5) {
         const size_t bytes_to_remove =
-          rend_cache_total - (size_t)(get_options()->MaxMemInQueues / 10);
+          hs_cache_total - (size_t)(get_options()->MaxMemInQueues / 10);
         alloc -= hs_cache_handle_oom(now, bytes_to_remove);
       }
       if (geoip_client_cache_total > get_options()->MaxMemInQueues / 5) {

@@ -1,4 +1,4 @@
-/* * Copyright (c) 2012-2020, The Tor Project, Inc. */
+/* * Copyright (c) 2012-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -32,7 +32,7 @@
  *
  * NOTE: For now, the separation between channels and specialized channels
  * (like channeltls) is not that well defined. So the channeltls layer calls
- * channel_process_cell() which originally comes from the connection subsytem.
+ * channel_process_cell() which originally comes from the connection subsystem.
  * This should be hopefully be fixed with #23993.
  *
  * For *outbound* cells, the entry point is: channel_write_packed_cell().
@@ -71,12 +71,12 @@
 #include "core/or/relay.h"
 #include "core/or/scheduler.h"
 #include "feature/client/entrynodes.h"
+#include "feature/hs/hs_service.h"
 #include "feature/nodelist/dirlist.h"
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nodelist.h"
 #include "feature/nodelist/routerlist.h"
 #include "feature/relay/router.h"
-#include "feature/rend/rendservice.h"
 #include "feature/stats/geoip_stats.h"
 #include "feature/stats/rephist.h"
 #include "lib/evloop/timers.h"
@@ -663,7 +663,7 @@ channel_find_by_global_id(uint64_t global_identifier)
 
 /** Return true iff <b>chan</b> matches <b>rsa_id_digest</b> and <b>ed_id</b>.
  * as its identity keys.  If either is NULL, do not check for a match. */
-static int
+int
 channel_remote_identity_matches(const channel_t *chan,
                                 const char *rsa_id_digest,
                                 const ed25519_public_key_t *ed_id)
@@ -1882,11 +1882,11 @@ channel_do_open_actions(channel_t *chan)
         geoip_note_client_seen(GEOIP_CLIENT_CONNECT,
                                &remote_addr, transport_name,
                                now);
-        tor_free(transport_name);
         /* Notify the DoS subsystem of a new client. */
         if (tlschan && tlschan->conn) {
           dos_new_client_conn(tlschan->conn, transport_name);
         }
+        tor_free(transport_name);
       }
       /* Otherwise the underlying transport can't tell us this, so skip it */
     }
@@ -1897,7 +1897,7 @@ channel_do_open_actions(channel_t *chan)
     if (!get_options()->ConnectionPadding) {
       /* Disable if torrc disabled */
       channelpadding_disable_padding_on_channel(chan);
-    } else if (rend_service_allow_non_anonymous_connection(get_options()) &&
+    } else if (hs_service_allow_non_anonymous_connection(get_options()) &&
                !networkstatus_get_param(NULL,
                                         CHANNELPADDING_SOS_PARAM,
                                         CHANNELPADDING_SOS_DEFAULT, 0, 1)) {
@@ -2387,7 +2387,7 @@ channel_is_better(channel_t *a, channel_t *b)
  * Get a channel to extend a circuit.
  *
  * Given the desired relay identity, pick a suitable channel to extend a
- * circuit to the target IPv4 or IPv6 address requsted by the client. Search
+ * circuit to the target IPv4 or IPv6 address requested by the client. Search
  * for an existing channel for the requested endpoint. Make sure the channel
  * is usable for new circuits, and matches one of the target addresses.
  *

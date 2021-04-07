@@ -1,4 +1,4 @@
-/* * Copyright (c) 2012-2020, The Tor Project, Inc. */
+/* * Copyright (c) 2012-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -72,7 +72,7 @@
 #include "core/or/or_handshake_state_st.h"
 #include "feature/nodelist/routerinfo_st.h"
 #include "core/or/var_cell_st.h"
-#include "src/feature/relay/relay_find_addr.h"
+#include "feature/relay/relay_find_addr.h"
 
 #include "lib/tls/tortls.h"
 #include "lib/tls/x509.h"
@@ -1248,8 +1248,7 @@ channel_tls_handle_var_cell(var_cell_t *var_cell, or_connection_t *conn)
        * the v2 and v3 handshakes. */
       /* But that should be happening any longer've disabled bufferevents. */
       tor_assert_nonfatal_unreached_once();
-
-      FALLTHROUGH;
+      FALLTHROUGH_UNLESS_ALL_BUGS_ARE_FATAL;
     case OR_CONN_STATE_TLS_SERVER_RENEGOTIATING:
       if (!(command_allowed_before_handshake(var_cell->command))) {
         log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
@@ -1428,7 +1427,7 @@ enter_v3_handshake_with_cell(var_cell_t *cell, channel_tls_t *chan)
            "OR_HANDSHAKING_V3, on a connection we originated.");
   }
   connection_or_block_renegotiation(chan->conn);
-  chan->conn->base_.state = OR_CONN_STATE_OR_HANDSHAKING_V3;
+  connection_or_change_state(chan->conn, OR_CONN_STATE_OR_HANDSHAKING_V3);
   if (connection_init_or_handshake_state(chan->conn, started_here) < 0) {
     connection_or_close_for_error(chan->conn, 0);
     return -1;

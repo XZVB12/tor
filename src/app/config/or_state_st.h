@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -21,7 +21,7 @@ struct config_suite_t;
 struct or_state_t {
   uint32_t magic_;
   /** The time at which we next plan to write the state to the disk.  Equal to
-   * TIME_MAX if there are no savable changes, 0 if there are changes that
+   * TIME_MAX if there are no saveable changes, 0 if there are changes that
    * should be saved right away. */
   time_t next_write;
 

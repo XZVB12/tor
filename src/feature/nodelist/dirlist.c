@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -58,15 +58,18 @@ add_trusted_dir_to_nodelist_addr_set(const dir_server_t *dir)
   tor_assert(dir);
   tor_assert(dir->is_authority);
 
-  /* Add IPv4 and then IPv6 if applicable. */
-  nodelist_add_addr_to_address_set(&dir->ipv4_addr);
+  /* Add IPv4 and then IPv6 if applicable. For authorities, we add the ORPort
+   * and DirPort so re-entry into the network back to them is not possible. */
+  nodelist_add_addr_to_address_set(&dir->ipv4_addr, dir->ipv4_orport,
+                                   dir->ipv4_dirport);
   if (!tor_addr_is_null(&dir->ipv6_addr)) {
-    nodelist_add_addr_to_address_set(&dir->ipv6_addr);
+    /* IPv6 DirPort is not a thing yet for authorities. */
+    nodelist_add_addr_to_address_set(&dir->ipv6_addr, dir->ipv6_orport, 0);
   }
 }
 
 /** Go over the trusted directory server list and add their address(es) to the
- * nodelist address set. This is called everytime a new consensus is set. */
+ * nodelist address set. This is called every time a new consensus is set. */
 MOCK_IMPL(void,
 dirlist_add_trusted_dir_addresses, (void))
 {

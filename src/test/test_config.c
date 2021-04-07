@@ -1,6 +1,6 @@
 /* Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 #include "orconfig.h"
@@ -41,8 +41,6 @@
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nodelist.h"
 #include "core/or/policies.h"
-#include "feature/rend/rendclient.h"
-#include "feature/rend/rendservice.h"
 #include "feature/relay/relay_find_addr.h"
 #include "feature/relay/router.h"
 #include "feature/relay/routermode.h"
@@ -408,7 +406,7 @@ good_bridge_line_test(const char *string, const char *test_addrport,
     tor_free(tmp);
   }
 
-  /* If we were asked to validate a transport name, make sure tha it
+  /* If we were asked to validate a transport name, make sure that it
      matches with the transport name that was parsed. */
   if (test_transport && !bridge_line->transport_name)
     tt_abort();
@@ -706,11 +704,13 @@ test_config_parse_tcp_proxy_line(void *arg)
   tor_free(msg);
 
   /* Bad TCPProxy line - unparsable address/port. */
-  ret = parse_tcp_proxy_line("haproxy 95.216.163.36/443", options, &msg);
+  MOCK(tor_addr_lookup, mock_tor_addr_lookup__fail_on_bad_addrs);
+  ret = parse_tcp_proxy_line("haproxy bogus_address!/300", options, &msg);
   tt_int_op(ret, OP_EQ, -1);
   tt_str_op(msg, OP_EQ, "TCPProxy address/port failed to parse or resolve. "
                         "Please fix.");
   tor_free(msg);
+  UNMOCK(tor_addr_lookup);
 
   /* Good TCPProxy line - ipv4. */
   ret = parse_tcp_proxy_line("haproxy 95.216.163.36:443", options, &msg);
@@ -723,7 +723,7 @@ test_config_parse_tcp_proxy_line(void *arg)
   tor_free(msg);
 
  done:
-  ;
+  UNMOCK(tor_addr_lookup);
 }
 
 /**
@@ -995,7 +995,7 @@ static const char *ret_addr_lookup_01010101[2] = {
 };
 
 /** This mock function is meant to replace tor_addr_lookup().
- * It answers with 1.1.1.1 as IP adddress that resulted from lookup.
+ * It answers with 1.1.1.1 as IP address that resulted from lookup.
  * This function increments <b>n_hostname_01010101</b> counter by one
  * every time it is called.
  */
@@ -1022,7 +1022,7 @@ tor_addr_lookup_01010101(const char *name, uint16_t family, tor_addr_t *addr)
 static int n_hostname_localhost = 0;
 
 /** This mock function is meant to replace tor_addr_lookup().
- * It answers with 127.0.0.1 as IP adddress that resulted from lookup.
+ * It answers with 127.0.0.1 as IP address that resulted from lookup.
  * This function increments <b>n_hostname_localhost</b> counter by one
  * every time it is called.
  */
@@ -1215,7 +1215,7 @@ get_interface_address6_replacement(int severity, sa_family_t family,
 
   return 0;
 }
-#endif
+#endif /* 0 */
 
 static int n_get_interface_address6_failure = 0;
 
@@ -1408,7 +1408,7 @@ test_config_find_my_address_mixed(void *arg)
  * AF_INET6 but we have one interface to do so thus we run the same exact unit
  * tests for both without copying them. */
 typedef struct find_my_address_params_t {
-  /* Index where the mock function results are located. For intance,
+  /* Index where the mock function results are located. For instance,
    * tor_addr_lookup_01010101() will have its returned value depending on the
    * family in ret_addr_lookup_01010101[].
    *
@@ -1458,6 +1458,7 @@ test_config_find_my_address(void *arg)
 
   options = options_new();
   options_init(options);
+  options->PublishServerDescriptor_ = V3_DIRINFO;
 
   /*
    * Case 0:
@@ -1778,6 +1779,22 @@ test_config_find_my_address(void *arg)
 
   tt_int_op(n_get_interface_address6, OP_EQ, ++prev_n_get_interface_address6);
   VALIDATE_FOUND_ADDRESS(true, RESOLVED_ADDR_INTERFACE, NULL);
+  CLEANUP_FOUND_ADDRESS;
+
+  /*
+   * Case 15: Address is a local address (internal) but we unset
+   * PublishServerDescriptor_ so we are allowed to hold it.
+   */
+  options->PublishServerDescriptor_ = NO_DIRINFO;
+  if (p->family == AF_INET) {
+    options->AssumeReachable = 1;
+  }
+  config_line_append(&options->Address, "Address", p->internal_ip);
+
+  tor_addr_parse(&test_addr, p->internal_ip);
+  retval = find_my_address(options, p->family, LOG_NOTICE, &resolved_addr,
+                           &method_used, &hostname_out);
+  VALIDATE_FOUND_ADDRESS(true, RESOLVED_ADDR_CONFIGURED, NULL);
   CLEANUP_FOUND_ADDRESS;
 
   UNMOCK(get_interface_address6);
@@ -3963,27 +3980,6 @@ test_config_directory_fetch(void *arg)
   tt_int_op(networkstatus_consensus_can_use_multiple_directories(options),
             OP_EQ, 1);
 
-  /* OR servers only fetch the consensus from the authorities when they don't
-   * know their own address, but never use multiple directories for bootstrap
-   */
-  or_options_free(options);
-  options = options_new();
-  options->ORPort_set = 1;
-
-  mock_relay_find_addr_to_publish_result = false;
-  tt_assert(server_mode(options) == 1);
-  tt_assert(public_server_mode(options) == 1);
-  tt_int_op(dirclient_fetches_from_authorities(options), OP_EQ, 1);
-  tt_int_op(networkstatus_consensus_can_use_multiple_directories(options),
-            OP_EQ, 0);
-
-  mock_relay_find_addr_to_publish_result = true;
-  tt_assert(server_mode(options) == 1);
-  tt_assert(public_server_mode(options) == 1);
-  tt_int_op(dirclient_fetches_from_authorities(options), OP_EQ, 0);
-  tt_int_op(networkstatus_consensus_can_use_multiple_directories(options),
-            OP_EQ, 0);
-
   /* Exit OR servers only fetch the consensus from the authorities when they
    * refuse unknown exits, but never use multiple directories for bootstrap
    */
@@ -4912,7 +4908,7 @@ test_config_parse_port_config__ports__ports_given(void *data)
   port_cfg = (port_cfg_t *)smartlist_get(slout, 0);
   tt_int_op(port_cfg->entry_cfg.session_group, OP_EQ, 1111122);
 
-  // Test success with a zero unix domain socket, and doesnt add it to out
+  // Test success with a zero unix domain socket, and doesn't add it to out
   config_free_lines(config_port_valid); config_port_valid = NULL;
   SMARTLIST_FOREACH(slout,port_cfg_t *,pf,port_cfg_free(pf));
   smartlist_clear(slout);
@@ -4922,7 +4918,7 @@ test_config_parse_port_config__ports__ports_given(void *data)
   tt_int_op(ret, OP_EQ, 0);
   tt_int_op(smartlist_len(slout), OP_EQ, 0);
 
-  // Test success with a one unix domain socket, and doesnt add it to out
+  // Test success with a one unix domain socket, and doesn't add it to out
   config_free_lines(config_port_valid); config_port_valid = NULL;
   SMARTLIST_FOREACH(slout,port_cfg_t *,pf,port_cfg_free(pf));
   smartlist_clear(slout);
@@ -6045,7 +6041,7 @@ test_config_include_wildcards(void *data)
   tt_ptr_op(result, OP_EQ, NULL);
   tt_int_op(include_used, OP_EQ, 1);
   config_free_lines(result);
-#endif
+#endif /* !defined(_WIN32) */
 
   // test pattern *.conf
   tor_snprintf(torrc_contents, sizeof(torrc_contents),
@@ -6185,9 +6181,9 @@ test_config_include_hidden(void *data)
     len++;
   }
   tt_int_op(len, OP_EQ, 1);
-#else
+#else /* !defined(_WIN32) */
   tt_ptr_op(result, OP_EQ, NULL);
-#endif
+#endif /* defined(_WIN32) */
   config_free_lines(result);
 
   // test wildcards match hidden folders when explicitly in the pattern
@@ -6855,16 +6851,138 @@ test_config_duplicate_orports(void *arg)
   port_parse_config(ports, config_port, "OR", CONN_TYPE_OR_LISTENER, "[::]",
                     0, CL_PORT_SERVER_OPTIONS);
 
-  // There should be three ports at this point.
-  tt_int_op(smartlist_len(ports), OP_EQ, 3);
+  /* There should be 4 ports at this point that is:
+   *    - 0.0.0.0:9050
+   *    - [::]:9050
+   *    - [::1]:9050
+   *    - [::1]:9050
+   */
+  tt_int_op(smartlist_len(ports), OP_EQ, 4);
 
+  /* This will remove the [::] and the extra [::1]. */
   remove_duplicate_orports(ports);
 
-  // The explicit IPv6 port should have replaced the implicit IPv6 port.
   tt_int_op(smartlist_len(ports), OP_EQ, 2);
+  tt_str_op(describe_relay_port(smartlist_get(ports, 0)), OP_EQ,
+            "ORPort 9050");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 1)), OP_EQ,
+            "ORPort [::1]:9050");
+
+  /* Reset. Test different ORPort value. */
+  SMARTLIST_FOREACH(ports, port_cfg_t *, p, port_cfg_free(p));
+  smartlist_free(ports);
+  config_free_lines(config_port);
+  config_port = NULL;
+  ports = smartlist_new();
+
+  /* Implicit port and then specific IPv6 addresses but more than one. */
+  config_line_append(&config_port, "ORPort", "9050"); // two implicit entries.
+  config_line_append(&config_port, "ORPort", "[4242::1]:9051");
+  config_line_append(&config_port, "ORPort", "[4242::2]:9051");
+
+  // Parse IPv4, then IPv6.
+  port_parse_config(ports, config_port, "OR", CONN_TYPE_OR_LISTENER, "0.0.0.0",
+                    0, CL_PORT_SERVER_OPTIONS);
+  port_parse_config(ports, config_port, "OR", CONN_TYPE_OR_LISTENER, "[::]",
+                    0, CL_PORT_SERVER_OPTIONS);
+
+  /* There should be 6 ports at this point that is:
+   *    - 0.0.0.0:9050
+   *    - [::]:9050
+   *    - [4242::1]:9051
+   *    - [4242::1]:9051
+   *    - [4242::2]:9051
+   *    - [4242::2]:9051
+   */
+  tt_int_op(smartlist_len(ports), OP_EQ, 6);
+
+  /* This will remove the [::] and the duplicates. */
+  remove_duplicate_orports(ports);
+
+  /* We have four address here, 1 IPv4 on 9050, IPv6 on 9050, IPv6 on 9051 and
+   * a different IPv6 on 9051. */
+  tt_int_op(smartlist_len(ports), OP_EQ, 4);
+  tt_str_op(describe_relay_port(smartlist_get(ports, 0)), OP_EQ,
+            "ORPort 9050");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 1)), OP_EQ,
+            "ORPort [4242::1]:9051");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 2)), OP_EQ,
+            "ORPort [4242::2]:9051");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 3)), OP_EQ,
+            "ORPort 9050");
+
+  /* Reset. Test different ORPort value. */
+  SMARTLIST_FOREACH(ports, port_cfg_t *, p, port_cfg_free(p));
+  smartlist_free(ports);
+  config_free_lines(config_port);
+  config_port = NULL;
+  ports = smartlist_new();
+
+  /* Three different ports. */
+  config_line_append(&config_port, "ORPort", "9050"); // two implicit entries.
+  config_line_append(&config_port, "ORPort", "[4242::1]:9051");
+  config_line_append(&config_port, "ORPort", "[4242::2]:9052");
+
+  // Parse IPv4, then IPv6.
+  port_parse_config(ports, config_port, "OR", CONN_TYPE_OR_LISTENER, "0.0.0.0",
+                    0, CL_PORT_SERVER_OPTIONS);
+  port_parse_config(ports, config_port, "OR", CONN_TYPE_OR_LISTENER, "[::]",
+                    0, CL_PORT_SERVER_OPTIONS);
+
+  /* There should be 6 ports at this point that is:
+   *    - 0.0.0.0:9050
+   *    - [::]:9050
+   *    - [4242::1]:9051
+   *    - [4242::1]:9051
+   *    - [4242::2]:9052
+   *    - [4242::2]:9052
+   */
+  tt_int_op(smartlist_len(ports), OP_EQ, 6);
+
+  /* This will remove the [::] and the duplicates. */
+  remove_duplicate_orports(ports);
+
+  /* We have four address here, 1 IPv4 on 9050, IPv6 on 9050, IPv6 on 9051 and
+   * IPv6 on 9052. */
+  tt_int_op(smartlist_len(ports), OP_EQ, 4);
+  tt_str_op(describe_relay_port(smartlist_get(ports, 0)), OP_EQ,
+            "ORPort 9050");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 1)), OP_EQ,
+            "ORPort [4242::1]:9051");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 2)), OP_EQ,
+            "ORPort [4242::2]:9052");
+  tt_str_op(describe_relay_port(smartlist_get(ports, 3)), OP_EQ,
+            "ORPort 9050");
 
  done:
   SMARTLIST_FOREACH(ports,port_cfg_t *,pf,port_cfg_free(pf));
+  smartlist_free(ports);
+  config_free_lines(config_port);
+}
+
+static void
+test_config_multifamily_port(void *arg)
+{
+  (void) arg;
+
+  config_line_t *config_port = NULL;
+  smartlist_t *ports = smartlist_new();
+
+  config_line_append(&config_port, "SocksPort", "9050");
+  config_line_append(&config_port, "SocksPort", "[::1]:9050");
+
+  // Parse IPv4, then IPv6.
+  port_parse_config(ports, config_port, "SOCKS", CONN_TYPE_AP_LISTENER,
+                    "0.0.0.0", 9050, 0);
+
+  /* There should be 2 ports at this point that is:
+   *    - 0.0.0.0:9050
+   *    - [::1]:9050
+   */
+  tt_int_op(smartlist_len(ports), OP_EQ, 2);
+
+ done:
+  SMARTLIST_FOREACH(ports, port_cfg_t *, cfg, port_cfg_free(cfg));
   smartlist_free(ports);
   config_free_lines(config_port);
 }
@@ -6875,7 +6993,7 @@ test_config_duplicate_orports(void *arg)
 
 #define CONFIG_TEST_SETUP(suffix, name, flags, setup, setup_data) \
   { #name#suffix, test_config_ ## name, flags, setup, setup_data }
-#endif
+#endif /* !defined(COCCI) */
 
 struct testcase_t config_tests[] = {
   CONFIG_TEST(adding_trusted_dir_server, TT_FORK),
@@ -6937,5 +7055,6 @@ struct testcase_t config_tests[] = {
   CONFIG_TEST(kvline_parse, 0),
   CONFIG_TEST(getinfo_config_names, 0),
   CONFIG_TEST(duplicate_orports, 0),
+  CONFIG_TEST(multifamily_port, 0),
   END_OF_TESTCASES
 };

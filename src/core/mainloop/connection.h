@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -73,8 +73,12 @@ struct buf_t;
 #define CONN_TYPE_EXT_OR_LISTENER 17
 /** Type for sockets listening for HTTP CONNECT tunnel connections. */
 #define CONN_TYPE_AP_HTTP_CONNECT_LISTENER 18
+/** Type for sockets listening for Metrics query connections. */
+#define CONN_TYPE_METRICS_LISTENER 19
+/** Type for connections from metrics listener. */
+#define CONN_TYPE_METRICS 20
 
-#define CONN_TYPE_MAX_ 19
+#define CONN_TYPE_MAX_ 21
 /* !!!! If _CONN_TYPE_MAX is ever over 31, we must grow the type field in
  * struct connection_t. */
 

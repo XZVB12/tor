@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -102,7 +102,7 @@ int router_extrainfo_digest_is_me(const char *digest);
 int router_is_me(const routerinfo_t *router);
 bool router_addr_is_my_published_addr(const tor_addr_t *addr);
 int router_build_fresh_descriptor(routerinfo_t **r, extrainfo_t **e);
-int router_rebuild_descriptor(int force);
+bool router_rebuild_descriptor(int force);
 char *router_dump_router_to_string(routerinfo_t *router,
                              const crypto_pk_t *ident_key,
                              const crypto_pk_t *tap_key,
@@ -129,6 +129,9 @@ void router_free_all(void);
 STATIC void get_platform_str(char *platform, size_t len);
 STATIC int router_write_fingerprint(int hashed, int ed25519_identity);
 STATIC smartlist_t *get_my_declared_family(const or_options_t *options);
+STATIC void router_announce_bridge_status_page(void);
+STATIC int load_stats_file(const char *filename, const char *ts_tag,
+                           time_t now, char **out);
 
 #ifdef TOR_UNIT_TESTS
 extern time_t desc_clean_since;

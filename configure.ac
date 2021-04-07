@@ -4,11 +4,13 @@ dnl Copyright (c) 2007-2019, The Tor Project, Inc.
 dnl See LICENSE for licensing information
 
 AC_PREREQ([2.63])
-AC_INIT([tor],[0.4.5.0-alpha-dev])
+AC_INIT([tor],[0.4.6.1-alpha-dev])
 AC_CONFIG_SRCDIR([src/app/main/tor_main.c])
 AC_CONFIG_MACRO_DIR([m4])
 
 configure_flags="$*"
+AC_DEFINE_UNQUOTED([CONFIG_FLAGS], ["$configure_flags"], [Flags passed to configure])
+
 
 # DO NOT EDIT THIS DEFINITION BY HAND UNLESS YOU KNOW WHAT YOU'RE DOING.
 #
@@ -16,7 +18,7 @@ configure_flags="$*"
 # version number changes.  Tor uses it to make sure that it
 # only shuts down for missing "required protocols" when those protocols
 # are listed as required by a consensus after this date.
-AC_DEFINE(APPROX_RELEASE_DATE, ["2020-06-09"], # for 0.4.5.0-alpha-dev
+AC_DEFINE(APPROX_RELEASE_DATE, ["2021-03-18"], # for 0.4.6.1-alpha-dev
           [Approximate date when this software was released. (Updated when the version changes.)])
 
 # "foreign" means we don't follow GNU package layout standards
@@ -129,8 +131,9 @@ if test "$enable_static_tor" = "yes"; then
   enable_static_libevent="yes";
   enable_static_openssl="yes";
   enable_static_zlib="yes";
-  CFLAGS="$CFLAGS -static"
+  TOR_STATIC_LDFLAGS="-static"
 fi
+AC_SUBST(TOR_STATIC_LDFLAGS)
 
 if test "$enable_system_torrc" = "no"; then
   AC_DEFINE(DISABLE_SYSTEM_TORRC, 1,
@@ -292,11 +295,25 @@ if test "x$enable_tracing_instrumentation_usdt" = "xyes"; then
   AC_CHECK_HEADERS([sys/sdt.h], [],
                    [AC_MSG_ERROR([USDT instrumentation requires sys/sdt.h header.
                                   On Debian, apt install systemtap-sdt-dev])], [])
-  dnl LTTng generates USDT probes if the UST library was built with
-  dnl --with-sdt. There is unfortunately no way to check that so we always
-  dnl build the USDT probes even though LTTng instrumentation was requested.
-  AC_DEFINE([USE_TRACING_INSTRUMENTATION_USDT], [1], [Using USDT instrumentation])
-  have_tracing=1
+  AC_MSG_CHECKING([STAP_PROBEV()])
+  AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+    #define SDT_USE_VARIADIC
+    #include <sys/sdt.h>
+    void test(void)
+    {
+      STAP_PROBEV(p, n, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+    }
+  ]])], [
+    AC_MSG_RESULT([yes])
+    dnl LTTng generates USDT probes if the UST library was built with
+    dnl --with-sdt. There is unfortunately no way to check that so we always
+    dnl build the USDT probes even though LTTng instrumentation was requested.
+    AC_DEFINE([USE_TRACING_INSTRUMENTATION_USDT], [1], [Using USDT instrumentation])
+    have_tracing=1
+  ], [
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR([USDT tracing support requires STAP_PROBEV()])
+  ])
 fi
 
 dnl Tracepoints event to debug logs.
@@ -341,6 +358,12 @@ dnl ---
 
 dnl All our modules.
 m4_define(MODULES, relay dirauth dircache)
+
+# Some modules are only disabled through another option. For those, we don't
+# want to print the help in the summary at the end of the configure. Any entry
+# in the following set will not print the "--disable-module-NAME" command in
+# the summary.
+m4_set_add_all([MODULES_WITH_NO_OPTIONS], [dircache])
 
 dnl Relay module.
 AC_ARG_ENABLE([module-relay],
@@ -406,6 +429,17 @@ AC_PROG_CPP
 AC_PROG_MAKE_SET
 AC_PROG_RANLIB
 AC_PROG_SED
+
+AX_COMPILER_VERSION
+AX_COMPILER_VENDOR
+
+AC_DEFINE_UNQUOTED([COMPILER_VERSION],["$ax_cv_c_compiler_version"], [Compiler version])
+AC_DEFINE_UNQUOTED([COMPILER_VENDOR],["$ax_cv_c_compiler_vendor"], [Compiler vendor])
+
+AS_CASE($ax_cv_c_compiler_vendor,
+        [gnu], AC_DEFINE([COMPILER],["GCC"],[Compiler name]),
+        AC_DEFINE([COMPILER],[],[Compiler name])
+)
 
 AC_ARG_VAR([PERL], [path to Perl binary])
 AC_CHECK_PROGS([PERL], [perl])
@@ -560,14 +594,14 @@ fi
 
 AH_BOTTOM([
 #ifdef _WIN32
-/* Defined to access windows functions and definitions for >=WinXP */
+/* Defined to access windows functions and definitions for >=WinVista */
 # ifndef WINVER
-#  define WINVER 0x0501
+#  define WINVER 0x0600
 # endif
 
-/* Defined to access _other_ windows functions and definitions for >=WinXP */
+/* Defined to access _other_ windows functions and definitions for >=WinVista */
 # ifndef _WIN32_WINNT
-#  define _WIN32_WINNT 0x0501
+#  define _WIN32_WINNT 0x0600
 # endif
 
 /* Defined to avoid including some windows headers as part of Windows.h */
@@ -875,6 +909,8 @@ if test "$bwin32" = "true"; then
   # think it's actually necessary.
   TOR_LIB_GDI=-lgdi32
   TOR_LIB_USERENV=-luserenv
+  TOR_LIB_BCRYPT=-lbcrypt
+  TOR_LIB_CRYPT32=-lcrypt32
 else
   TOR_LIB_WS32=
   TOR_LIB_GDI=
@@ -883,6 +919,8 @@ fi
 AC_SUBST(TOR_LIB_WS32)
 AC_SUBST(TOR_LIB_GDI)
 AC_SUBST(TOR_LIB_IPHLPAPI)
+AC_SUBST(TOR_LIB_BCRYPT)
+AC_SUBST(TOR_LIB_CRYPT32)
 AC_SUBST(TOR_LIB_SHLWAPI)
 AC_SUBST(TOR_LIB_USERENV)
 
@@ -900,7 +938,7 @@ if test "$enable_static_libevent" = "yes"; then
     fi
 fi
 
-TOR_SEARCH_LIBRARY(libevent, $trylibeventdir, [-levent $STATIC_LIBEVENT_FLAGS $TOR_LIB_WS32], [
+TOR_SEARCH_LIBRARY(libevent, $trylibeventdir, [-levent $STATIC_LIBEVENT_FLAGS $TOR_LIB_IPHLPAPI $TOR_LIB_BCRYPT $TOR_LIB_WS32], [
 #ifdef _WIN32
 #include <winsock2.h>
 #endif
@@ -1031,7 +1069,7 @@ AC_ARG_WITH(ssl-dir,
   ])
 
 AC_MSG_NOTICE([Now, we'll look for OpenSSL >= 1.0.1])
-TOR_SEARCH_LIBRARY(openssl, $tryssldir, [-lssl -lcrypto $TOR_LIB_GDI $TOR_LIB_WS32],
+TOR_SEARCH_LIBRARY(openssl, $tryssldir, [-lssl -lcrypto $TOR_LIB_GDI $TOR_LIB_WS32 $TOR_LIB_CRYPT32],
     [#include <openssl/ssl.h>
      char *getenv(const char *);],
     [struct ssl_cipher_st;
@@ -1050,7 +1088,7 @@ if test "$enable_static_openssl" = "yes"; then
    if test "$tor_cv_library_openssl_dir" = "(system)"; then
      AC_MSG_ERROR("You must specify an explicit --with-openssl-dir=x option when using --enable-static-openssl")
    else
-     TOR_OPENSSL_LIBS="$TOR_LIBDIR_openssl/libssl.a $TOR_LIBDIR_openssl/libcrypto.a"
+     TOR_OPENSSL_LIBS="$TOR_LIBDIR_openssl/libssl.a $TOR_LIBDIR_openssl/libcrypto.a $TOR_LIB_WS32 $TOR_LIB_CRYPT32 $TOR_LIB_BCRYPT"
    fi
 else
      TOR_OPENSSL_LIBS="-lssl -lcrypto"
@@ -1065,13 +1103,30 @@ LIBS="$TOR_OPENSSL_LIBS $LIBS"
 LDFLAGS="$TOR_LDFLAGS_openssl $LDFLAGS"
 CPPFLAGS="$TOR_CPPFLAGS_openssl $CPPFLAGS"
 
+dnl Tor currently uses a number of APIs that are deprecated in OpenSSL 3.0.0
+dnl and later.  We want to migrate away from them, but that will be a lot of
+dnl work. (See ticket tor#40166.)  For now, we disable the deprecation
+dnl warnings.
+
+AC_MSG_CHECKING([for OpenSSL >= 3.0.0])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <openssl/opensslv.h>
+#if !defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER <= 0x30000000L
+#error "you_have_version_3"
+#endif
+   ]], [[]])],
+   [ AC_MSG_RESULT([no]) ],
+   [ AC_MSG_RESULT([yes]);
+     AC_DEFINE(OPENSSL_SUPPRESS_DEPRECATED, 1, [disable openssl deprecated-function warnings]) ])
+
+AC_MSG_CHECKING([for OpenSSL < 1.0.1])
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
 #include <openssl/opensslv.h>
 #if !defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER < 0x1000100fL
 #error "too old"
 #endif
    ]], [[]])],
-   [ : ],
+   [ AC_MSG_RESULT([no]) ],
    [ AC_MSG_ERROR([OpenSSL is too old. We require 1.0.1 or later. You can specify a path to a newer one with --with-openssl-dir.]) ])
 
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
@@ -1102,7 +1157,7 @@ AC_RUN_IFELSE([AC_LANG_SOURCE([AC_LANG_PROGRAM([[
 ]])])], [openssl_ver_mismatch=no], [
    # This is a kludge to figure out whether compilation failed, or whether
    # running the program failed.
-   if test "$ac_retval" == "1"; then
+   if test "$ac_retval" = "1"; then
       openssl_ver_mismatch=inconclusive
    else
       openssl_ver_mismatch=yes
@@ -1470,7 +1525,7 @@ dnl These cflags add bunches of branches, and we haven't been able to
 dnl persuade ourselves that they're suitable for code that needs to be
 dnl constant time.
 AC_SUBST(CFLAGS_BUGTRAP)
-dnl These cflags are variant ones sutable for code that needs to be
+dnl These cflags are variant ones suitable for code that needs to be
 dnl constant-time.
 AC_SUBST(CFLAGS_CONSTTIME)
 
@@ -2101,7 +2156,6 @@ AS_CASE([$malloc],
 
   [system], [
      # handle this later, including the jemalloc fallback
-    AC_CHECK_FUNCS(mallinfo)
   ],
 
   [AC_MSG_ERROR([--with-malloc=`$with_malloc' not supported, see --help])
@@ -2761,10 +2815,10 @@ PPRINT_PROP_BOOL([libscrypt (--disable-libscrypt)], $value)
 test "x$enable_systemd" = "xyes" && value=1 || value=0
 PPRINT_PROP_BOOL([Systemd support (--enable-systemd)], $value)
 
-test "x$enable_lzma" = "xyes" && value=1 || value=0
+test "x$have_lzma" = "xyes" && value=1 || value=0
 PPRINT_PROP_BOOL([liblzma (--enable-lzma)], $value)
 
-test "x$enable_zstd" = "xyes" && value=1 || value=0
+test "x$have_zstd" = "xyes" && value=1 || value=0
 PPRINT_PROP_BOOL([libzstd (--enable-zstd)], $value)
 
 AS_ECHO
@@ -2785,7 +2839,9 @@ PPRINT_SUBTITLE([Modules])
 m4_foreach_w([mname], MODULES,
   [
     AM_COND_IF(m4_join([], [BUILD_MODULE_], m4_toupper([]mname[])), value=1, value=0)
-    PPRINT_PROP_BOOL([mname (--disable-module-mname)], $value)
+    m4_set_contains([MODULES_WITH_NO_OPTIONS], mname,
+                    PPRINT_PROP_BOOL([mname], $value),
+                    PPRINT_PROP_BOOL([mname (--disable-module-mname)], $value))
   ]
 )
 

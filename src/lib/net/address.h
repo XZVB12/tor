@@ -1,6 +1,6 @@
 /* Copyright (c) 2003-2004, Roger Dingledine
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -224,7 +224,7 @@ tor_addr_eq_ipv4h(const tor_addr_t *a, uint32_t u)
 #define TOR_ADDR_BUF_LEN 48
 
 /** Length of a buffer containing an IP address along with a port number and
- * a seperating colon.
+ * a separating colon.
  *
  * This allows enough space for
  *   "[ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255]:12345",

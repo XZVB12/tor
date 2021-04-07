@@ -1,6 +1,6 @@
 /* Copyright (c) 2003, Roger Dingledine
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -180,7 +180,7 @@ clean_fname_for_stat(char *name)
 /** Modify <b>fname</b> to contain the name of its parent directory.  Doesn't
  * actually examine the filesystem; does a purely syntactic modification.
  *
- * The parent of the root director is considered to be iteself.
+ * The parent of the root director is considered to be itself.
  *
  * Path separators are the forward slash (/) everywhere and additionally
  * the backslash (\) on Win32.
@@ -319,7 +319,7 @@ make_path_absolute(const char *fname)
  * picture explanation here should be read first.
  *
  * Purpose of the functions:
- * - tor_glob - recevies a pattern and returns all the paths that result from
+ * - tor_glob - receives a pattern and returns all the paths that result from
  *   its glob expansion, globs can be present on all path components.
  * - get_glob_opened_files - receives a pattern and returns all the paths that
  *   are opened during its expansion (the paths before any path fragment that
@@ -328,10 +328,10 @@ make_path_absolute(const char *fname)
  *   allowed list.
  *
  * Due to OS API differences explained below, the implementation of tor_glob is
- * completly different for Windows and POSIX systems, so we ended up with three
- * different implementations:
+ * completely different for Windows and POSIX systems, so we ended up with
+ * three different implementations:
  * - tor_glob for POSIX - as POSIX glob does everything we need, we simply call
- *   it and process the results. This is completly implemented in tor_glob.
+ *   it and process the results. This is completely implemented in tor_glob.
  * - tor_glob for WIN32 - because the WIN32 API only supports expanding globs
  *   in the last path fragment, we need to expand the globs in each path
  *   fragment manually and call recursively to get the same behaviour as POSIX
@@ -537,6 +537,10 @@ unglob_win32(const char *pattern, int prev_sep, int next_sep)
 static DIR *
 prot_opendir(const char *name)
 {
+  if (sandbox_interned_string_is_missing(name)) {
+    errno = EPERM;
+    return NULL;
+  }
   return opendir(sandbox_intern_string(name));
 }
 
@@ -544,6 +548,10 @@ prot_opendir(const char *name)
 static int
 prot_stat(const char *pathname, struct stat *buf)
 {
+  if (sandbox_interned_string_is_missing(pathname)) {
+    errno = EPERM;
+    return -1;
+  }
   return stat(sandbox_intern_string(pathname), buf);
 }
 
@@ -551,6 +559,10 @@ prot_stat(const char *pathname, struct stat *buf)
 static int
 prot_lstat(const char *pathname, struct stat *buf)
 {
+  if (sandbox_interned_string_is_missing(pathname)) {
+    errno = EPERM;
+    return -1;
+  }
   return lstat(sandbox_intern_string(pathname), buf);
 }
 /** As closedir, but has the right type for gl_closedir */
@@ -559,11 +571,12 @@ wrap_closedir(void *arg)
 {
   closedir(arg);
 }
-#endif /* defined(HAVE_GLOB) */
+#endif /* defined(_WIN32) || ... */
 
 /** Return a new list containing the paths that match the pattern
  * <b>pattern</b>. Return NULL on error. On POSIX systems, errno is set by the
- * glob function.
+ * glob function or is set to EPERM if glob tried to access a file not allowed
+ * by the seccomp sandbox.
  */
 struct smartlist_t *
 tor_glob(const char *pattern)
@@ -623,7 +636,7 @@ tor_glob(const char *pattern)
 #else
   (void)pattern;
   return result;
-#endif /* !defined(HAVE_GLOB) */
+#endif /* defined(_WIN32) || ... */
 
   return result;
 }

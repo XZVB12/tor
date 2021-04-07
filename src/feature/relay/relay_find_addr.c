@@ -1,4 +1,4 @@
-/* Copyright (c) 2001-2020, The Tor Project, Inc. */
+/* Copyright (c) 2001-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -12,10 +12,16 @@
 #include "app/config/resolve_addr.h"
 
 #include "core/mainloop/mainloop.h"
+#include "core/or/circuitlist.h"
+#include "core/or/circuituse.h"
+#include "core/or/extendinfo.h"
 
 #include "feature/control/control_events.h"
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/nodelist/dirlist.h"
+#include "feature/nodelist/node_select.h"
+#include "feature/nodelist/nodelist.h"
+#include "feature/nodelist/routerstatus_st.h"
 #include "feature/relay/relay_find_addr.h"
 #include "feature/relay/router.h"
 #include "feature/relay/routermode.h"
@@ -93,6 +99,13 @@ relay_address_new_suggestion(const tor_addr_t *suggested_addr,
  *       populated by the NETINFO cell content or HTTP header from a
  *       directory.
  *
+ * The AddressDisableIPv6 is checked here for IPv6 address discovery and if
+ * set, false is returned and addr_out is UNSPEC.
+ *
+ * Before doing any discovery, the configuration is checked for an ORPort of
+ * the given family. If none can be found, false is returned and addr_out is
+ * UNSPEC.
+ *
  * Return true on success and addr_out contains the address to use for the
  * given family. On failure to find the address, false is returned and
  * addr_out is set to an AF_UNSPEC address. */
@@ -109,6 +122,12 @@ relay_find_addr_to_publish, (const or_options_t *options, int family,
    * this instance. If so, we return a failure. It is done here so we don't
    * query the suggested cache that might be populated with an IPv6. */
   if (family == AF_INET6 && options->AddressDisableIPv6) {
+    return false;
+  }
+
+  /* There is no point on attempting an address discovery to publish if we
+   * don't have an ORPort for this family. */
+  if (!routerconf_find_or_port(options, family)) {
     return false;
   }
 
@@ -133,21 +152,88 @@ relay_find_addr_to_publish, (const or_options_t *options, int family,
     goto found;
   }
 
-  /* No publishable address was found. */
+  /* No publishable address was found even though we have an ORPort thus
+   * print a notice log so operator can notice. We'll do that every hour so
+   * it is not too spammy but enough so operators address the issue. */
+  static ratelim_t rlim = RATELIM_INIT(3600);
+  log_fn_ratelim(&rlim, LOG_NOTICE, LD_CONFIG,
+                 "Unable to find %s address for ORPort %u. "
+                 "You might want to specify %sOnly to it or set an "
+                 "explicit address or set Address.",
+                 fmt_af_family(family),
+                 routerconf_find_or_port(options, family),
+                 (family == AF_INET) ? fmt_af_family(AF_INET6) :
+                                       fmt_af_family(AF_INET));
+
+  /* Not found. */
   return false;
 
  found:
   return true;
 }
 
-/** Return true iff this relay has an address set for the given family.
- *
- * This only checks the caches so it will not trigger a full discovery of the
- * address. */
-bool
-relay_has_address_set(int family)
+/** How often should we launch a circuit to an authority to be sure of getting
+ * a guess for our IP? */
+#define DUMMY_DOWNLOAD_INTERVAL (20*60)
+
+void
+relay_addr_learn_from_dirauth(void)
 {
-  tor_addr_t addr;
-  return relay_find_addr_to_publish(get_options(), family,
-                                    RELAY_FIND_ADDR_CACHE_ONLY, &addr);
+  static time_t last_dummy_circuit = 0;
+  const or_options_t *options = get_options();
+  time_t now = time(NULL);
+  bool have_addr;
+  tor_addr_t addr_out;
+
+  /* This dummy circuit only matter for relays. */
+  if (BUG(!server_mode(options))) {
+    return;
+  }
+
+  /* Lookup the address cache to learn if we have a good usable address. We
+   * still force relays to have an IPv4 so that alone is enough to learn if we
+   * need a lookup. In case we don't have one, we might want to attempt a
+   * dummy circuit to learn our address as a suggestion from an authority. */
+  have_addr = relay_find_addr_to_publish(options, AF_INET,
+                                         RELAY_FIND_ADDR_CACHE_ONLY,
+                                         &addr_out);
+
+  /* If we're a relay or bridge for which we were unable to discover our
+   * public address, we rely on learning our address from a directory
+   * authority from the NETINFO cell. */
+  if (!have_addr && last_dummy_circuit + DUMMY_DOWNLOAD_INTERVAL < now) {
+    last_dummy_circuit = now;
+
+    const routerstatus_t *rs = router_pick_trusteddirserver(V3_DIRINFO, 0);
+    if (BUG(!rs)) {
+      /* We should really always have trusted directories configured at this
+       * stage. They are loaded early either from default list or the one
+       * given in the configuration file. */
+      return;
+    }
+    const node_t *node = node_get_by_id(rs->identity_digest);
+    if (!node) {
+      /* This can happen if we are still in the early starting stage where no
+       * descriptors we actually fetched and thus we have the routerstatus_t
+       * for the authority but not its descriptor which is needed to build a
+       * circuit and thus learn our address. */
+      log_info(LD_GENERAL, "Can't build a circuit to an authority. Unable to "
+                           "learn for now our address from them.");
+      return;
+    }
+    extend_info_t *ei = extend_info_from_node(node, 1);
+    if (BUG(!ei)) {
+      return;
+    }
+
+    log_debug(LD_GENERAL, "Attempting dummy testing circuit to an authority "
+                          "in order to learn our address.");
+
+    /* Launch a one-hop testing circuit to a trusted authority so we can learn
+     * our address through the NETINFO cell. */
+    circuit_launch_by_extend_info(CIRCUIT_PURPOSE_TESTING, ei,
+                                  CIRCLAUNCH_IS_INTERNAL |
+                                  CIRCLAUNCH_ONEHOP_TUNNEL);
+    extend_info_free(ei);
+  }
 }

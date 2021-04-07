@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2020, The Tor Project, Inc. */
+/* Copyright (c) 2016-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -24,11 +24,11 @@
 #include "feature/hs_common/shared_random_client.h"
 #include "feature/keymgt/loadkey.h"
 #include "feature/nodelist/describe.h"
+#include "feature/nodelist/microdesc.h"
 #include "feature/nodelist/networkstatus.h"
 #include "feature/nodelist/nickname.h"
 #include "feature/nodelist/node_select.h"
 #include "feature/nodelist/nodelist.h"
-#include "feature/rend/rendservice.h"
 #include "lib/crypt_ops/crypto_ope.h"
 #include "lib/crypt_ops/crypto_rand.h"
 #include "lib/crypt_ops/crypto_util.h"
@@ -40,6 +40,7 @@
 #include "feature/hs/hs_descriptor.h"
 #include "feature/hs/hs_ident.h"
 #include "feature/hs/hs_intropoint.h"
+#include "feature/hs/hs_metrics.h"
 #include "feature/hs/hs_service.h"
 #include "feature/hs/hs_stats.h"
 #include "feature/hs/hs_ob.h"
@@ -195,6 +196,10 @@ register_service(hs_service_ht *map, hs_service_t *service)
   if (map == hs_service_map) {
     hs_service_map_has_changed();
   }
+  /* Setup metrics. This is done here because in order to initialize metrics,
+   * we require tor to have fully initialized a service so the ports of the
+   * service can be looked at for instance. */
+  hs_metrics_service_init(service);
 
   return 0;
 }
@@ -260,8 +265,8 @@ service_clear_config(hs_service_config_t *config)
   }
   tor_free(config->directory_path);
   if (config->ports) {
-    SMARTLIST_FOREACH(config->ports, rend_service_port_config_t *, p,
-                      rend_service_port_config_free(p););
+    SMARTLIST_FOREACH(config->ports, hs_port_config_t *, p,
+                      hs_port_config_free(p););
     smartlist_free(config->ports);
   }
   if (config->clients) {
@@ -543,7 +548,7 @@ service_intro_point_remove(const hs_service_t *service,
   /* Trying all descriptors. */
   FOR_EACH_DESCRIPTOR_BEGIN(service, desc) {
     /* We'll try to remove the descriptor on both descriptors which is not
-     * very expensive to do instead of doing loopup + remove. */
+     * very expensive to do instead of doing lookup + remove. */
     digest256map_remove(desc->intro_points.map,
                         ip->auth_key_kp.pubkey.pubkey);
   } FOR_EACH_DESCRIPTOR_END;
@@ -564,7 +569,7 @@ service_intro_point_find(const hs_service_t *service,
    *
    * Even if we use the same node as intro point in both descriptors, the node
    * will have a different intro auth key for each descriptor since we generate
-   * a new one everytime we pick an intro point.
+   * a new one every time we pick an intro point.
    *
    * After #22893 gets implemented, intro points will be moved to be
    * per-service instead of per-descriptor so this function will need to
@@ -781,7 +786,7 @@ close_service_rp_circuits(hs_service_t *service)
         ed25519_pubkey_eq(&ocirc->hs_ident->identity_pk,
                           &service->keys.identity_pk)) {
       /* Reason is FINISHED because service has been removed and thus the
-       * circuit is considered old/uneeded. When freed, it is removed from the
+       * circuit is considered old/unneeded. When freed, it is removed from the
        * hs circuitmap. */
       circuit_mark_for_close(TO_CIRCUIT(ocirc), END_CIRC_REASON_FINISHED);
     }
@@ -799,7 +804,7 @@ close_intro_circuits(hs_service_intropoints_t *intro_points)
     origin_circuit_t *ocirc = hs_circ_service_get_intro_circ(ip);
     if (ocirc) {
       /* Reason is FINISHED because service has been removed and thus the
-       * circuit is considered old/uneeded. When freed, the circuit is removed
+       * circuit is considered old/unneeded. When freed, the circuit is removed
        * from the HS circuitmap. */
       circuit_mark_for_close(TO_CIRCUIT(ocirc), END_CIRC_REASON_FINISHED);
     }
@@ -1083,7 +1088,7 @@ load_service_keys(hs_service_t *service)
     goto end;
   }
 
-  /* Succes. */
+  /* Success. */
   ret = 0;
  end:
   tor_free(fname);
@@ -1110,6 +1115,43 @@ client_filename_is_valid(const char *filename)
   }
 
   return ret;
+}
+
+/** Parse an base32-encoded authorized client from a string.
+ *
+ * Return the key on success, return NULL, otherwise. */
+hs_service_authorized_client_t *
+parse_authorized_client_key(const char *key_str, int severity)
+{
+  hs_service_authorized_client_t *client = NULL;
+
+  /* We expect a specific length of the base64 encoded key so make sure we
+   * have that so we don't successfully decode a value with a different length
+   * and end up in trouble when copying the decoded key into a fixed length
+   * buffer. */
+  if (strlen(key_str) != BASE32_NOPAD_LEN(CURVE25519_PUBKEY_LEN)) {
+    log_fn(severity, LD_REND, "Client authorization encoded base32 public key "
+                              "length is invalid: %s", key_str);
+    goto err;
+  }
+
+  client = tor_malloc_zero(sizeof(hs_service_authorized_client_t));
+  if (base32_decode((char *) client->client_pk.public_key,
+                    sizeof(client->client_pk.public_key),
+                    key_str, strlen(key_str)) !=
+      sizeof(client->client_pk.public_key)) {
+    log_fn(severity, LD_REND, "Client authorization public key cannot be "
+             "decoded: %s", key_str);
+    goto err;
+  }
+
+  return client;
+
+ err:
+  if (client != NULL) {
+    service_authorized_client_free(client);
+  }
+  return NULL;
 }
 
 /** Parse an authorized client from a string. The format of a client string
@@ -1158,23 +1200,7 @@ parse_authorized_client(const char *client_key_str)
     goto err;
   }
 
-  /* We expect a specific length of the base32 encoded key so make sure we
-   * have that so we don't successfully decode a value with a different length
-   * and end up in trouble when copying the decoded key into a fixed length
-   * buffer. */
-  if (strlen(pubkey_b32) != BASE32_NOPAD_LEN(CURVE25519_PUBKEY_LEN)) {
-    log_warn(LD_REND, "Client authorization encoded base32 public key "
-                      "length is invalid: %s", pubkey_b32);
-    goto err;
-  }
-
-  client = tor_malloc_zero(sizeof(hs_service_authorized_client_t));
-  if (base32_decode((char *) client->client_pk.public_key,
-                    sizeof(client->client_pk.public_key),
-                    pubkey_b32, strlen(pubkey_b32)) !=
-      sizeof(client->client_pk.public_key)) {
-    log_warn(LD_REND, "Client authorization public key cannot be decoded: %s",
-             pubkey_b32);
+  if ((client = parse_authorized_client_key(pubkey_b32, LOG_WARN)) == NULL) {
     goto err;
   }
 
@@ -1298,7 +1324,7 @@ load_client_keys(hs_service_t *service)
 }
 
 /** Release all storage held in <b>client</b>. */
-STATIC void
+void
 service_authorized_client_free_(hs_service_authorized_client_t *client)
 {
   if (!client) {
@@ -2191,7 +2217,7 @@ pick_needed_intro_points(hs_service_t *service,
   }
 
   /* Build an exclude list of nodes of our intro point(s). The expiring intro
-   * points are OK to pick again because this is afterall a concept of round
+   * points are OK to pick again because this is after all a concept of round
    * robin so they are considered valid nodes to pick again. */
   DIGEST256MAP_FOREACH(desc->intro_points.map, key,
                        hs_service_intro_point_t *, ip) {
@@ -2375,7 +2401,7 @@ should_remove_intro_point(hs_service_intro_point_t *ip, time_t now)
 
   tor_assert(ip);
 
-  /* Any one of the following needs to be True to furfill the criteria to
+  /* Any one of the following needs to be True to fulfill the criteria to
    * remove an intro point. */
   bool has_no_retries = (ip->circuit_retries >
                          MAX_INTRO_POINT_CIRCUIT_RETRIES);
@@ -2506,7 +2532,8 @@ should_rotate_descriptors(hs_service_t *service, time_t now)
 
   tor_assert(service);
 
-  ns = networkstatus_get_live_consensus(now);
+  ns = networkstatus_get_reasonably_live_consensus(now,
+                                                   usable_consensus_flavor());
   if (ns == NULL) {
     goto no_rotation;
   }
@@ -2640,8 +2667,6 @@ run_housekeeping_event(time_t now)
 static void
 run_build_descriptor_event(time_t now)
 {
-  /* For v2 services, this step happens in the upload event. */
-
   /* Run v3+ events. */
   /* We start by rotating the descriptors only if needed. */
   rotate_all_descriptors(now);
@@ -2812,11 +2837,6 @@ run_build_circuit_event(time_t now)
   if (router_have_consensus_path() == CONSENSUS_PATH_UNKNOWN ||
       !have_completed_a_circuit()) {
     return;
-  }
-
-  /* Run v2 check. */
-  if (rend_num_services() > 0) {
-    rend_consider_services_intro_points(now);
   }
 
   /* Run v3+ check. */
@@ -2994,7 +3014,7 @@ upload_descriptor_to_all(const hs_service_t *service,
   /* Get our list of responsible HSDir. */
   responsible_dirs = smartlist_new();
   /* The parameter 0 means that we aren't a client so tell the function to use
-   * the spread store consensus paremeter. */
+   * the spread store consensus parameter. */
   hs_get_responsible_hsdirs(&desc->blinded_kp.pubkey, desc->time_period_num,
                             service->desc_next == desc, 0, responsible_dirs);
 
@@ -3193,8 +3213,9 @@ should_service_upload_descriptor(const hs_service_t *service,
   }
 
   /* Don't upload desc if we don't have a live consensus */
-  if (!networkstatus_get_live_consensus(now)) {
-    msg = tor_strdup("No live consensus");
+  if (!networkstatus_get_reasonably_live_consensus(now,
+                                            usable_consensus_flavor())) {
+    msg = tor_strdup("No reasonably live consensus");
     log_cant_upload_desc(service, desc, msg,
                          LOG_DESC_UPLOAD_REASON_NO_LIVE_CONSENSUS);
     goto cannot;
@@ -3228,7 +3249,7 @@ refresh_service_descriptor(const hs_service_t *service,
                            hs_service_descriptor_t *desc, time_t now)
 {
   /* There are few fields that we consider "mutable" in the descriptor meaning
-   * we need to update them regurlarly over the lifetime fo the descriptor.
+   * we need to update them regularly over the lifetime for the descriptor.
    * The rest are set once and should not be modified.
    *
    *  - Signing key certificate.
@@ -3253,13 +3274,6 @@ refresh_service_descriptor(const hs_service_t *service,
 STATIC void
 run_upload_descriptor_event(time_t now)
 {
-  /* v2 services use the same function for descriptor creation and upload so
-   * we do everything here because the intro circuits were checked before. */
-  if (rend_num_services() > 0) {
-    rend_consider_services_upload(now);
-    rend_consider_descriptor_republication();
-  }
-
   /* Run v3+ check. */
   FOR_EACH_SERVICE_BEGIN(service) {
     FOR_EACH_DESCRIPTOR_BEGIN(service, desc) {
@@ -3388,6 +3402,15 @@ service_rendezvous_circ_has_opened(origin_circuit_t *circ)
   /* If the cell can't be sent, the circuit will be closed within this
    * function. */
   hs_circ_service_rp_has_opened(service, circ);
+
+  /* Update metrics that we have an established rendezvous circuit. It is not
+   * entirely true until the client receives the RENDEZVOUS2 cell and starts
+   * sending but if that circuit collapes, we'll decrement the counter thus it
+   * will even out the metric. */
+  if (TO_CIRCUIT(circ)->purpose == CIRCUIT_PURPOSE_S_REND_JOINED) {
+    hs_metrics_new_established_rdv(service);
+  }
+
   goto done;
 
  err:
@@ -3438,6 +3461,9 @@ service_handle_intro_established(origin_circuit_t *circ,
                                        payload_len) < 0) {
     goto err;
   }
+
+  /* Update metrics. */
+  hs_metrics_new_established_intro(service);
 
   log_info(LD_REND, "Successfully received an INTRO_ESTABLISHED cell "
                     "on circuit %u for service %s",
@@ -3491,6 +3517,8 @@ service_handle_introduce2(origin_circuit_t *circ, const uint8_t *payload,
                                 payload, payload_len) < 0) {
     goto err;
   }
+  /* Update metrics that a new introduction was successful. */
+  hs_metrics_new_introduction(service);
 
   return 0;
  err:
@@ -3512,7 +3540,7 @@ service_add_fnames_to_list(const hs_service_t *service, smartlist_t *list)
   s_dir = service->config.directory_path;
   /* The hostname file. */
   smartlist_add(list, hs_path_from_filename(s_dir, fname_hostname));
-  /* The key files splitted in two. */
+  /* The key files split in two. */
   tor_snprintf(fname, sizeof(fname), "%s_secret_key", fname_keyfile_prefix);
   smartlist_add(list, hs_path_from_filename(s_dir, fname));
   tor_snprintf(fname, sizeof(fname), "%s_public_key", fname_keyfile_prefix);
@@ -3574,7 +3602,81 @@ service_encode_descriptor(const hs_service_t *service,
 /* Public API */
 /* ========== */
 
-/** This is called everytime the service map (v2 or v3) changes that is if an
+/* Are HiddenServiceSingleHopMode and HiddenServiceNonAnonymousMode consistent?
+ */
+static int
+hs_service_non_anonymous_mode_consistent(const or_options_t *options)
+{
+  /* !! is used to make these options boolean */
+  return (!! options->HiddenServiceSingleHopMode ==
+          !! options->HiddenServiceNonAnonymousMode);
+}
+
+/* Do the options allow onion services to make direct (non-anonymous)
+ * connections to introduction or rendezvous points?
+ * Must only be called after options_validate_single_onion() has successfully
+ * checked onion service option consistency.
+ * Returns true if tor is in HiddenServiceSingleHopMode. */
+int
+hs_service_allow_non_anonymous_connection(const or_options_t *options)
+{
+  tor_assert(hs_service_non_anonymous_mode_consistent(options));
+  return options->HiddenServiceSingleHopMode ? 1 : 0;
+}
+
+/* Do the options allow us to reveal the exact startup time of the onion
+ * service?
+ * Single Onion Services prioritise availability over hiding their
+ * startup time, as their IP address is publicly discoverable anyway.
+ * Must only be called after options_validate_single_onion() has successfully
+ * checked onion service option consistency.
+ * Returns true if tor is in non-anonymous hidden service mode. */
+int
+hs_service_reveal_startup_time(const or_options_t *options)
+{
+  tor_assert(hs_service_non_anonymous_mode_consistent(options));
+  return hs_service_non_anonymous_mode_enabled(options);
+}
+
+/* Is non-anonymous mode enabled using the HiddenServiceNonAnonymousMode
+ * config option?
+ * Must only be called after options_validate_single_onion() has successfully
+ * checked onion service option consistency.
+ */
+int
+hs_service_non_anonymous_mode_enabled(const or_options_t *options)
+{
+  tor_assert(hs_service_non_anonymous_mode_consistent(options));
+  return options->HiddenServiceNonAnonymousMode ? 1 : 0;
+}
+
+/** Called when a circuit was just cleaned up. This is done right before the
+ * circuit is marked for close. */
+void
+hs_service_circuit_cleanup_on_close(const circuit_t *circ)
+{
+  tor_assert(circ);
+  tor_assert(CIRCUIT_IS_ORIGIN(circ));
+
+  switch (circ->purpose) {
+  case CIRCUIT_PURPOSE_S_INTRO:
+    /* About to close an established introduction circuit. Update the metrics
+     * to reflect how many we have at the moment. */
+    hs_metrics_close_established_intro(
+      &CONST_TO_ORIGIN_CIRCUIT(circ)->hs_ident->identity_pk);
+    break;
+  case CIRCUIT_PURPOSE_S_REND_JOINED:
+    /* About to close an established rendezvous circuit. Update the metrics to
+     * reflect how many we have at the moment. */
+    hs_metrics_close_established_rdv(
+      &CONST_TO_ORIGIN_CIRCUIT(circ)->hs_ident->identity_pk);
+    break;
+  default:
+    break;
+  }
+}
+
+/** This is called every time the service map changes that is if an
  * element is added or removed. */
 void
 hs_service_map_has_changed(void)
@@ -3636,15 +3738,17 @@ hs_service_upload_desc_to_dir(const char *encoded_desc,
 /** Add the ephemeral service using the secret key sk and ports. Both max
  * streams parameter will be set in the newly created service.
  *
- * Ownership of sk and ports is passed to this routine.  Regardless of
- * success/failure, callers should not touch these values after calling this
- * routine, and may assume that correct cleanup has been done on failure.
+ * Ownership of sk, ports, and auth_clients_v3 is passed to this routine.
+ * Regardless of success/failure, callers should not touch these values
+ * after calling this routine, and may assume that correct cleanup has
+ * been done on failure.
  *
  * Return an appropriate hs_service_add_ephemeral_status_t. */
 hs_service_add_ephemeral_status_t
 hs_service_add_ephemeral(ed25519_secret_key_t *sk, smartlist_t *ports,
                          int max_streams_per_rdv_circuit,
-                         int max_streams_close_circuit, char **address_out)
+                         int max_streams_close_circuit,
+                         smartlist_t *auth_clients_v3, char **address_out)
 {
   hs_service_add_ephemeral_status_t ret;
   hs_service_t *service = NULL;
@@ -3686,6 +3790,16 @@ hs_service_add_ephemeral(ed25519_secret_key_t *sk, smartlist_t *ports,
                         "for v3 service.");
     ret = RSAE_BADVIRTPORT;
     goto err;
+  }
+
+  if (auth_clients_v3) {
+    service->config.clients = smartlist_new();
+    SMARTLIST_FOREACH(auth_clients_v3, hs_service_authorized_client_t *, c, {
+      if (c != NULL) {
+        smartlist_add(service->config.clients, c);
+      }
+    });
+    smartlist_free(auth_clients_v3);
   }
 
   /* Build the onion address for logging purposes but also the control port
@@ -3864,7 +3978,7 @@ hs_service_set_conn_addr_port(const origin_circuit_t *circ,
     goto err_no_close;
   }
 
-  /* Find a virtual port of that service mathcing the one in the connection if
+  /* Find a virtual port of that service matching the one in the connection if
    * successful, set the address in the connection. */
   if (hs_set_conn_addr_port(service->config.ports, conn) < 0) {
     log_info(LD_REND, "No virtual port mapping exists for port %d for "
@@ -3912,9 +4026,6 @@ hs_service_lists_fnames_for_sandbox(smartlist_t *file_list,
 {
   tor_assert(file_list);
   tor_assert(dir_list);
-
-  /* Add files and dirs for legacy services. */
-  rend_services_add_filenames_to_lists(file_list, dir_list);
 
   /* Add files and dirs for v3+. */
   FOR_EACH_SERVICE_BEGIN(service) {
@@ -3966,10 +4077,7 @@ hs_service_receive_introduce2(origin_circuit_t *circ, const uint8_t *payload,
 
   if (circ->hs_ident) {
     ret = service_handle_introduce2(circ, payload, payload_len);
-    hs_stats_note_introduce2_cell(1);
-  } else {
-    ret = rend_service_receive_introduction(circ, payload, payload_len);
-    hs_stats_note_introduce2_cell(0);
+    hs_stats_note_introduce2_cell();
   }
 
  done:
@@ -3996,12 +4104,8 @@ hs_service_receive_intro_established(origin_circuit_t *circ,
     goto err;
   }
 
-  /* Handle both version. v2 uses rend_data and v3 uses the hs circuit
-   * identifier hs_ident. Can't be both. */
   if (circ->hs_ident) {
     ret = service_handle_intro_established(circ, payload, payload_len);
-  } else {
-    ret = rend_service_intro_established(circ, payload, payload_len);
   }
 
   if (ret < 0) {
@@ -4020,21 +4124,15 @@ hs_service_circuit_has_opened(origin_circuit_t *circ)
 {
   tor_assert(circ);
 
-  /* Handle both version. v2 uses rend_data and v3 uses the hs circuit
-   * identifier hs_ident. Can't be both. */
   switch (TO_CIRCUIT(circ)->purpose) {
   case CIRCUIT_PURPOSE_S_ESTABLISH_INTRO:
     if (circ->hs_ident) {
       service_intro_circ_has_opened(circ);
-    } else {
-      rend_service_intro_has_opened(circ);
     }
     break;
   case CIRCUIT_PURPOSE_S_CONNECT_REND:
     if (circ->hs_ident) {
       service_rendezvous_circ_has_opened(circ);
-    } else {
-      rend_service_rendezvous_has_opened(circ);
     }
     break;
   default:
@@ -4062,11 +4160,6 @@ hs_service_get_version_from_key(const hs_service_t *service)
     version = HS_VERSION_THREE;
     goto end;
   }
-  /* Version 2 check. */
-  if (rend_service_key_on_disk(directory_path)) {
-    version = HS_VERSION_TWO;
-    goto end;
-  }
 
  end:
   return version;
@@ -4077,13 +4170,6 @@ hs_service_get_version_from_key(const hs_service_t *service)
 int
 hs_service_load_all_keys(void)
 {
-  /* Load v2 service keys if we have v2. */
-  if (rend_num_services() != 0) {
-    if (rend_service_load_all_keys(NULL) < 0) {
-      goto err;
-    }
-  }
-
   /* Load or/and generate them for v3+. */
   SMARTLIST_FOREACH_BEGIN(hs_service_staging_list, hs_service_t *, service) {
     /* Ignore ephemeral service, they already have their keys set. */
@@ -4169,7 +4255,35 @@ hs_service_stage_services(const smartlist_t *service_list)
   smartlist_add_all(hs_service_staging_list, service_list);
 }
 
-/** Allocate and initilize a service object. The service configuration will
+/** Return a newly allocated list of all the service's metrics store. */
+smartlist_t *
+hs_service_get_metrics_stores(void)
+{
+  smartlist_t *list = smartlist_new();
+
+  if (hs_service_map) {
+    FOR_EACH_SERVICE_BEGIN(service) {
+      smartlist_add(list, service->metrics.store);
+    } FOR_EACH_SERVICE_END;
+  }
+
+  return list;
+}
+
+/** Lookup the global service map for the given identitiy public key and
+ * return the service object if found, NULL if not. */
+hs_service_t *
+hs_service_find(const ed25519_public_key_t *identity_pk)
+{
+  tor_assert(identity_pk);
+
+  if (!hs_service_map) {
+    return NULL;
+  }
+  return find_service(hs_service_map, identity_pk);
+}
+
+/** Allocate and initialize a service object. The service configuration will
  * contain the default values. Return the newly allocated object pointer. This
  * function can't fail. */
 hs_service_t *
@@ -4215,6 +4329,9 @@ hs_service_free_(hs_service_t *service)
     tor_free(service->state.ob_subcreds);
   }
 
+  /* Free metrics object. */
+  hs_metrics_service_free(service);
+
   /* Wipe service keys. */
   memwipe(&service->keys.identity_sk, 0, sizeof(service->keys.identity_sk));
 
@@ -4252,9 +4369,6 @@ hs_service_init(void)
   tor_assert(!hs_service_map);
   tor_assert(!hs_service_staging_list);
 
-  /* v2 specific. */
-  rend_service_init();
-
   hs_service_map = tor_malloc_zero(sizeof(struct hs_service_ht));
   HT_INIT(hs_service_ht, hs_service_map);
 
@@ -4265,7 +4379,6 @@ hs_service_init(void)
 void
 hs_service_free_all(void)
 {
-  rend_service_free_all();
   service_free_all();
   hs_config_free_all();
 }

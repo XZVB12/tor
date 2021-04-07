@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -162,6 +162,28 @@ bridge_get_addr_port(const bridge_info_t *bridge)
 {
   tor_assert(bridge);
   return &bridge->addrport_configured;
+}
+
+/**
+ * Given a <b>bridge</b>, return the transport name. If none were configured,
+ * NULL is returned.
+ */
+const char *
+bridget_get_transport_name(const bridge_info_t *bridge)
+{
+  tor_assert(bridge);
+  return bridge->transport_name;
+}
+
+/**
+ * Return true if @a bridge has a transport name for which we don't actually
+ * know a transport.
+ */
+bool
+bridge_has_invalid_transport(const bridge_info_t *bridge)
+{
+  const char *tname = bridget_get_transport_name(bridge);
+  return tname && transport_get_by_name(tname) == NULL;
 }
 
 /** If we have a bridge configured whose digest matches <b>digest</b>, or a
@@ -645,6 +667,15 @@ launch_direct_bridge_descriptor_fetch(bridge_info_t *bridge)
       DIR_PURPOSE_FETCH_SERVERDESC))
     return; /* it's already on the way */
 
+  if (bridge_has_invalid_transport(bridge)) {
+    download_status_mark_impossible(&bridge->fetch_status);
+    log_warn(LD_CONFIG, "Can't use bridge at %s: there is no configured "
+             "transport called \"%s\".",
+             safe_str_client(fmt_and_decorate_addr(&bridge->addr)),
+             bridget_get_transport_name(bridge));
+    return; /* Can't use this bridge; it has not */
+  }
+
   if (routerset_contains_bridge(options->ExcludeNodes, bridge)) {
     download_status_mark_impossible(&bridge->fetch_status);
     log_warn(LD_APP, "Not using bridge at %s: it is in ExcludeNodes.",
@@ -934,7 +965,7 @@ learned_bridge_descriptor(routerinfo_t *ri, int from_cache)
       if (!from_cache) {
         /* This schedules the re-fetch at a constant interval, which produces
          * a pattern of bridge traffic. But it's better than trying all
-         * configured briges several times in the first few minutes. */
+         * configured bridges several times in the first few minutes. */
         download_status_reset(&bridge->fetch_status);
       }
 

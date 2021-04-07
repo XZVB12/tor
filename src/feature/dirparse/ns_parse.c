@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -54,7 +54,7 @@ static token_rule_t rtrstatus_token_table[] = {
   T01("w",                   K_W,                   ARGS,    NO_OBJ ),
   T0N("m",                   K_M,               CONCAT_ARGS, NO_OBJ ),
   T0N("id",                  K_ID,                  GE(2),   NO_OBJ ),
-  T01("pr",                  K_PROTO,           CONCAT_ARGS, NO_OBJ ),
+  T1("pr",                   K_PROTO,           CONCAT_ARGS, NO_OBJ ),
   T0N("opt",                 K_OPT,             CONCAT_ARGS, OBJ_OK ),
   END_OF_TABLE
 };
@@ -247,7 +247,7 @@ routerstatus_parse_guardfraction(const char *guardfraction_str,
 
   tor_assert(bool_eq(vote, vote_rs));
 
-  /* If this info comes from a consensus, but we should't apply
+  /* If this info comes from a consensus, but we shouldn't apply
      guardfraction, just exit. */
   if (is_consensus && !should_apply_guardfraction(NULL)) {
     return 0;
@@ -446,6 +446,8 @@ routerstatus_parse_entry_from_string(memarea_t *area,
         rs->is_v2_dir = 1;
       } else if (!strcmp(tok->args[i], "StaleDesc")) {
         rs->is_staledesc = 1;
+      } else if (!strcmp(tok->args[i], "Sybil")) {
+        rs->is_sybil = 1;
       }
     }
     /* These are implied true by having been included in a consensus made

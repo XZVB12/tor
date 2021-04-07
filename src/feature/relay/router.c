@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 #define ROUTER_PRIVATE
@@ -137,6 +137,18 @@ static authority_cert_t *legacy_key_certificate = NULL;
  * but this key is never actually loaded by the Tor process.  Instead, it's
  * used by tor-gencert to sign new signing keys and make new key
  * certificates. */
+
+/** Indicate if the IPv6 address should be omitted from the descriptor when
+ * publishing it. This can happen if the IPv4 is reachable but the
+ * auto-discovered IPv6 is not. We still publish the descriptor.
+ *
+ * Only relays should look at this and only for their descriptor.
+ *
+ * XXX: The real harder fix is to never put in the routerinfo_t a non
+ * reachable address and instead use the last resolved address cache to do
+ * reachability test or anything that has to do with what address tor thinks
+ * it has. */
+static bool omit_ipv6_on_publish = false;
 
 /** Return a readonly string with human readable description
  * of <b>err</b>.
@@ -386,7 +398,8 @@ MOCK_IMPL(crypto_pk_t *,
 get_server_identity_key,(void))
 {
   tor_assert(server_identitykey);
-  tor_assert(server_mode(get_options()));
+  tor_assert(server_mode(get_options()) ||
+             get_options()->command == CMD_KEY_EXPIRATION);
   assert_identity_keys_ok();
   return server_identitykey;
 }
@@ -398,7 +411,9 @@ get_server_identity_key,(void))
 int
 server_identity_key_is_set(void)
 {
-  return server_mode(get_options()) && server_identitykey != NULL;
+  return (server_mode(get_options()) ||
+          get_options()->command == CMD_KEY_EXPIRATION) &&
+         server_identitykey != NULL;
 }
 
 /** Set the current client identity key to <b>k</b>.
@@ -828,6 +843,25 @@ router_initialize_tls_context(void)
                               (unsigned int)lifetime);
 }
 
+/** Announce URL to bridge status page. */
+STATIC void
+router_announce_bridge_status_page(void)
+{
+  char fingerprint[FINGERPRINT_LEN + 1];
+
+  if (crypto_pk_get_hashed_fingerprint(get_server_identity_key(),
+                                       fingerprint) < 0) {
+    // LCOV_EXCL_START
+    log_err(LD_GENERAL, "Unable to compute bridge fingerprint");
+    return;
+    // LCOV_EXCL_STOP
+  }
+
+  log_notice(LD_GENERAL, "You can check the status of your bridge relay at "
+                         "https://bridges.torproject.org/status?id=%s",
+                         fingerprint);
+}
+
 /** Compute fingerprint (or hashed fingerprint if hashed is 1) and write
  * it to 'fingerprint' (or 'hashed-fingerprint'). Return 0 on success, or
  * -1 if Tor should die,
@@ -941,7 +975,7 @@ init_keys(void)
 
   /* OP's don't need persistent keys; just make up an identity and
    * initialize the TLS context. */
-  if (!server_mode(options)) {
+  if (!server_mode(options) && !(options->command == CMD_KEY_EXPIRATION)) {
     return init_keys_client();
   }
   if (init_keys_common() < 0)
@@ -1129,6 +1163,10 @@ init_keys(void)
     log_err(LD_FS, "Error writing ed25519 identity to file");
     return -1;
   }
+
+  /* Display URL to bridge status page. */
+  if (! public_server_mode(options))
+    router_announce_bridge_status_page();
 
   if (!authdir_mode(options))
     return 0;
@@ -1319,8 +1357,8 @@ decide_to_advertise_dir_impl(const or_options_t *options,
 int
 router_should_advertise_dirport(const or_options_t *options, uint16_t dir_port)
 {
-  /* supports_tunnelled_dir_requests is not relevant, pass 0 */
-  return decide_to_advertise_dir_impl(options, dir_port, 0) ? dir_port : 0;
+  /* Only authorities should advertise a DirPort now. */
+  return authdir_mode(options) ? dir_port : 0;
 }
 
 /** Front-end to decide_to_advertise_dir_impl(): return 0 if we don't want to
@@ -1393,7 +1431,11 @@ decide_if_publishable_server(void)
       return 0;
     }
   }
-  if (!router_orport_seems_reachable(options, AF_INET6)) {
+  /* We could be flagged to omit the IPv6 and if so, don't check for
+   * reachability on the IPv6. This can happen if the address was
+   * auto-discovered but turns out to be non reachable. */
+  if (!omit_ipv6_on_publish &&
+      !router_orport_seems_reachable(options, AF_INET6)) {
     // We have an ipv6 orport, and it doesn't seem reachable.
     if (!publish_even_when_ipv6_orport_unreachable) {
       return 0;
@@ -1424,10 +1466,9 @@ consider_publishable_server(int force)
     return;
 
   rebuilt = router_rebuild_descriptor(0);
-  if (decide_if_publishable_server()) {
+  if (rebuilt && decide_if_publishable_server()) {
     set_server_advertised(1);
-    if (rebuilt == 0)
-      router_upload_dir_desc_to_dirservers(force);
+    router_upload_dir_desc_to_dirservers(force);
   } else {
     set_server_advertised(0);
   }
@@ -1814,7 +1855,7 @@ router_get_my_extrainfo(void)
 {
   if (!server_mode(get_options()))
     return NULL;
-  if (router_rebuild_descriptor(0))
+  if (!router_rebuild_descriptor(0))
     return NULL;
   return desc_extrainfo;
 }
@@ -2045,12 +2086,11 @@ MOCK_IMPL(STATIC int,
 router_build_fresh_unsigned_routerinfo,(routerinfo_t **ri_out))
 {
   routerinfo_t *ri = NULL;
-  tor_addr_t ipv4_addr, ipv6_addr;
+  tor_addr_t ipv4_addr;
   char platform[256];
   int hibernating = we_are_hibernating();
   const or_options_t *options = get_options();
   int result = TOR_ROUTERINFO_ERROR_INTERNAL_BUG;
-  uint16_t ipv6_orport = 0;
 
   if (BUG(!ri_out)) {
     result = TOR_ROUTERINFO_ERROR_INTERNAL_BUG;
@@ -2062,37 +2102,32 @@ router_build_fresh_unsigned_routerinfo,(routerinfo_t **ri_out))
   bool have_v4 = relay_find_addr_to_publish(options, AF_INET,
                                             RELAY_FIND_ADDR_NO_FLAG,
                                             &ipv4_addr);
-  bool have_v6 = relay_find_addr_to_publish(options, AF_INET6,
-                                            RELAY_FIND_ADDR_NO_FLAG,
-                                            &ipv6_addr);
-
   /* Tor requires a relay to have an IPv4 so bail if we can't find it. */
   if (!have_v4) {
-    log_warn(LD_CONFIG, "Don't know my address while generating descriptor");
+    log_info(LD_CONFIG, "Don't know my address while generating descriptor. "
+                        "Launching circuit to authority to learn it.");
+    relay_addr_learn_from_dirauth();
     result = TOR_ROUTERINFO_ERROR_NO_EXT_ADDR;
     goto err;
   }
   /* Log a message if the address in the descriptor doesn't match the ORPort
    * and DirPort addresses configured by the operator. */
   router_check_descriptor_address_consistency(&ipv4_addr);
-  router_check_descriptor_address_consistency(&ipv6_addr);
 
   ri = tor_malloc_zero(sizeof(routerinfo_t));
+  tor_addr_copy(&ri->ipv4_addr, &ipv4_addr);
   ri->cache_info.routerlist_index = -1;
   ri->nickname = tor_strdup(options->Nickname);
 
   /* IPv4. */
-  tor_addr_copy(&ri->ipv4_addr, &ipv4_addr);
   ri->ipv4_orport = routerconf_find_or_port(options, AF_INET);
   ri->ipv4_dirport = routerconf_find_dir_port(options, 0);
 
-  /* IPv6. Do not publish an IPv6 if we don't have an ORPort that can be used
-   * with the address. This is possible for instance if the ORPort is
-   * IPv4Only. */
-  ipv6_orport = routerconf_find_or_port(options, AF_INET6);
-  if (have_v6 && ipv6_orport != 0) {
-    tor_addr_copy(&ri->ipv6_addr, &ipv6_addr);
-    ri->ipv6_orport = ipv6_orport;
+  /* Optionally check for an IPv6. We still publish without one. */
+  if (relay_find_addr_to_publish(options, AF_INET6, RELAY_FIND_ADDR_NO_FLAG,
+                                 &ri->ipv6_addr)) {
+    ri->ipv6_orport = routerconf_find_or_port(options, AF_INET6);
+    router_check_descriptor_address_consistency(&ri->ipv6_addr);
   }
 
   ri->supports_tunnelled_dir_requests =
@@ -2409,9 +2444,10 @@ router_build_fresh_descriptor(routerinfo_t **r, extrainfo_t **e)
 
 /** If <b>force</b> is true, or our descriptor is out-of-date, rebuild a fresh
  * routerinfo, signed server descriptor, and extra-info document for this OR.
- * Return 0 on success, -1 on temporary error.
+ *
+ * Return true on success, else false on temporary error.
  */
-int
+bool
 router_rebuild_descriptor(int force)
 {
   int err = 0;
@@ -2419,13 +2455,13 @@ router_rebuild_descriptor(int force)
   extrainfo_t *ei;
 
   if (desc_clean_since && !force)
-    return 0;
+    return true;
 
   log_info(LD_OR, "Rebuilding relay descriptor%s", force ? " (forced)" : "");
 
   err = router_build_fresh_descriptor(&ri, &ei);
   if (err < 0) {
-    return err;
+    return false;
   }
 
   routerinfo_free(desc_routerinfo);
@@ -2441,7 +2477,7 @@ router_rebuild_descriptor(int force)
   }
   desc_dirty_reason = NULL;
   control_event_my_descriptor_changed();
-  return 0;
+  return true;
 }
 
 /** Called when we have a new set of consensus parameters. */
@@ -2461,18 +2497,6 @@ router_new_consensus_params(const networkstatus_t *ns)
   publish_even_when_ipv4_orport_unreachable = ar;
   publish_even_when_ipv6_orport_unreachable = ar || ar6;
 }
-
-/** Indicate if the IPv6 address should be omitted from the descriptor when
- * publishing it. This can happen if the IPv4 is reachable but the
- * auto-discovered IPv6 is not. We still publish the descriptor.
- *
- * Only relays should look at this and only for their descriptor.
- *
- * XXX: The real harder fix is to never put in the routerinfo_t a non
- * reachable address and instead use the last resolved address cache to do
- * reachability test or anything that has to do with what address tor thinks
- * it has. */
-static bool omit_ipv6_on_publish = false;
 
 /** Mark our descriptor out of data iff the IPv6 omit status flag is flipped
  * it changes from its previous value.
@@ -2674,10 +2698,20 @@ check_descriptor_ipaddress_changed(time_t now)
       previous = &my_ri->ipv6_addr;
     }
 
-    /* Ignore returned value because we want to notice not only an address
-     * change but also if an address is lost (current == UNSPEC). */
-    find_my_address(get_options(), family, LOG_INFO, &current, &method,
-                    &hostname);
+    /* Attempt to discovery the publishable address for the family which will
+     * actively attempt to discover the address if we are configured with a
+     * port for the family.
+     *
+     * It is OK to ignore the returned value here since in the failure case,
+     * that is the address was not found, the current value is set to UNSPEC.
+     * Add this (void) so Coverity is happy. */
+    (void) relay_find_addr_to_publish(get_options(), family,
+                                      RELAY_FIND_ADDR_NO_FLAG, &current);
+
+    /* The "current" address might be UNSPEC meaning it was not discovered nor
+     * found in our current cache. If we had an address before and we have
+     * none now, we consider this an IP change since it appears the relay lost
+     * its address. */
 
     if (!tor_addr_eq(previous, &current)) {
       char *source;
@@ -3121,57 +3155,77 @@ router_dump_exit_policy_to_string(const routerinfo_t *router,
                                include_ipv6);
 }
 
-/** Load the contents of <b>filename</b>, find the last line starting with
- * <b>end_line</b>, ensure that its timestamp is not more than 25 hours in
- * the past or more than 1 hour in the future with respect to <b>now</b>,
- * and write the file contents starting with that line to *<b>out</b>.
- * Return 1 for success, 0 if the file does not exist or is empty, or -1
- * if the file does not contain a line matching these criteria or other
- * failure. */
-static int
-load_stats_file(const char *filename, const char *end_line, time_t now,
+/** Load the contents of <b>filename</b>, find a line starting with
+ * timestamp tag <b>ts_tag</b>, ensure that its timestamp is not more than 25
+ * hours in the past or more than 1 hour in the future with respect to
+ * <b>now</b>, and write the entire file contents into <b>out</b>.
+ *
+ * The timestamp expected should be an ISO-formatted UTC time value which is
+ * parsed using our parse_iso_time() function.
+ *
+ * In case more than one tag are found in the file, the very first one is
+ * used.
+ *
+ * Return 1 for success, 0 if the file does not exist or is empty, or -1 if
+ * the file does not contain a line with the timestamp tag. */
+STATIC int
+load_stats_file(const char *filename, const char *ts_tag, time_t now,
                 char **out)
 {
   int r = -1;
   char *fname = get_datadir_fname(filename);
-  char *contents, *start = NULL, *tmp, timestr[ISO_TIME_LEN+1];
+  char *contents = NULL, timestr[ISO_TIME_LEN+1];
   time_t written;
+
   switch (file_status(fname)) {
-    case FN_FILE:
-      /* X022 Find an alternative to reading the whole file to memory. */
-      if ((contents = read_file_to_str(fname, 0, NULL))) {
-        tmp = strstr(contents, end_line);
-        /* Find last block starting with end_line */
-        while (tmp) {
-          start = tmp;
-          tmp = strstr(tmp + 1, end_line);
-        }
-        if (!start)
-          goto notfound;
-        if (strlen(start) < strlen(end_line) + 1 + sizeof(timestr))
-          goto notfound;
-        strlcpy(timestr, start + 1 + strlen(end_line), sizeof(timestr));
-        if (parse_iso_time(timestr, &written) < 0)
-          goto notfound;
-        if (written < now - (25*60*60) || written > now + (1*60*60))
-          goto notfound;
-        *out = tor_strdup(start);
-        r = 1;
-      }
-     notfound:
-      tor_free(contents);
-      break;
-    /* treat empty stats files as if the file doesn't exist */
-    case FN_NOENT:
-    case FN_EMPTY:
-      r = 0;
-      break;
-    case FN_ERROR:
-    case FN_DIR:
-    default:
-      break;
+  case FN_FILE:
+    contents = read_file_to_str(fname, 0, NULL);
+    if (contents == NULL) {
+      log_debug(LD_BUG, "Unable to read content of %s", filename);
+      goto end;
+    }
+    /* Find the timestamp tag to validate that the file is not too old or if
+     * exists. */
+    const char *ts_tok = find_str_at_start_of_line(contents, ts_tag);
+    if (!ts_tok) {
+      log_warn(LD_BUG, "Token %s not found in file %s", ts_tag, filename);
+      goto end;
+    }
+    /* Do we have enough for parsing a timestamp? */
+    if (strlen(ts_tok) < strlen(ts_tag) + 1 + sizeof(timestr)) {
+      log_warn(LD_BUG, "Token %s malformed in file %s", ts_tag, filename);
+      goto end;
+    }
+    /* Parse timestamp in order to validate it is not too old. */
+    strlcpy(timestr, ts_tok + strlen(ts_tag) + 1, sizeof(timestr));
+    if (parse_iso_time(timestr, &written) < 0) {
+      log_warn(LD_BUG, "Token %s has a malformed timestamp in file %s",
+               ts_tag, filename);
+      goto end;
+    }
+    if (written < now - (25*60*60) || written > now + (1*60*60)) {
+      /* This can happen normally so don't log. */
+      goto end;
+    }
+    /* Success. Put in the entire content. */
+    *out = contents;
+    contents = NULL; /* Must not free it. */
+    r = 1;
+    break;
+  /* treat empty stats files as if the file doesn't exist */
+  case FN_NOENT:
+  case FN_EMPTY:
+    r = 0;
+    break;
+  case FN_ERROR:
+  case FN_DIR:
+  default:
+    break;
   }
+
+ end:
   tor_free(fname);
+  tor_free(contents);
   return r;
 }
 
@@ -3288,6 +3342,11 @@ extrainfo_dump_to_string_stats_helper(smartlist_t *chunks,
                         "hidserv-stats-end", now, &contents) > 0) {
       smartlist_add(chunks, contents);
     }
+    if (options->HiddenServiceStatistics &&
+        load_stats_file("stats"PATH_SEPARATOR"hidserv-v3-stats",
+                        "hidserv-v3-stats-end", now, &contents) > 0) {
+      smartlist_add(chunks, contents);
+    }
     if (options->EntryStatistics &&
         load_stats_file("stats"PATH_SEPARATOR"entry-stats",
                         "entry-stats-end", now, &contents) > 0) {
@@ -3312,6 +3371,12 @@ extrainfo_dump_to_string_stats_helper(smartlist_t *chunks,
       contents = rep_hist_get_padding_count_lines();
       if (contents)
         smartlist_add(chunks, contents);
+    }
+    if (options->OverloadStatistics) {
+      contents = rep_hist_get_overload_stats_lines();
+      if (contents) {
+        smartlist_add(chunks, contents);
+      }
     }
     /* bridge statistics */
     if (should_record_bridge_info(options)) {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, The Tor Project, Inc. */
+/* Copyright (c) 2020-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -18,7 +18,7 @@
 #include "test/test.h"
 
 /**
- * This struct holds the various informations that are needed for router
+ * This struct holds the various information that are needed for router
  * comparison. Each router in the test function has one, and they are all
  * put in a global digestmap, router_properties
  */
@@ -656,6 +656,30 @@ done:
   ROUTER_FREE(pppp);
 }
 
+static void
+test_dirvote_parse_param_buggy(void *arg)
+{
+  (void)arg;
+
+  /* Tests for behavior with bug emulation to migrate away from bug 19011. */
+  tt_i64_op(extract_param_buggy("blah blah", "bwweightscale", 10000),
+            OP_EQ, 10000);
+  tt_i64_op(extract_param_buggy("bwweightscale=7", "bwweightscale", 10000),
+            OP_EQ, 7);
+  tt_i64_op(extract_param_buggy("bwweightscale=7 foo=9",
+                                "bwweightscale", 10000),
+            OP_EQ, 10000);
+  tt_i64_op(extract_param_buggy("foo=7 bwweightscale=777 bar=9",
+                                "bwweightscale", 10000),
+            OP_EQ, 10000);
+  tt_i64_op(extract_param_buggy("foo=7 bwweightscale=1234",
+                                "bwweightscale", 10000),
+            OP_EQ, 1234);
+
+ done:
+  ;
+}
+
 #define NODE(name, flags)                           \
   {                                                 \
     #name, test_dirvote_##name, (flags), NULL, NULL \
@@ -668,4 +692,5 @@ struct testcase_t dirvote_tests[] = {
     NODE(get_sybil_by_ip_version_ipv4, TT_FORK),
     NODE(get_sybil_by_ip_version_ipv6, TT_FORK),
     NODE(get_all_possible_sybil, TT_FORK),
+    NODE(parse_param_buggy, 0),
     END_OF_TESTCASES};

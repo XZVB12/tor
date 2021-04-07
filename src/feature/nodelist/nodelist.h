@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -35,7 +35,9 @@ node_t *nodelist_add_microdesc(microdesc_t *md);
 void nodelist_set_consensus(const networkstatus_t *ns);
 void nodelist_ensure_freshness(const networkstatus_t *ns);
 int nodelist_probably_contains_address(const tor_addr_t *addr);
-void nodelist_add_addr_to_address_set(const tor_addr_t *addr);
+bool nodelist_reentry_contains(const tor_addr_t *addr, uint16_t port);
+void nodelist_add_addr_to_address_set(const tor_addr_t *addr,
+                                      uint16_t or_port, uint16_t dir_port);
 
 void nodelist_remove_microdesc(const char *identity_digest, microdesc_t *md);
 void nodelist_remove_routerinfo(routerinfo_t *ri);

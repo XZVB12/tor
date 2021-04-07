@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -66,6 +66,7 @@
 #include "feature/nodelist/torcert.h"
 #include "core/or/channelpadding.h"
 #include "feature/dirauth/authmode.h"
+#include "feature/hs/hs_service.h"
 
 #include "core/or/cell_st.h"
 #include "core/or/cell_queue_st.h"
@@ -205,6 +206,26 @@ connection_or_set_identity_digest(or_connection_t *conn,
   /* Deal with channels */
   if (chan)
     channel_set_identity_digest(chan, rsa_digest, ed_id);
+}
+
+/**
+ * Return the Ed25519 identity of the peer for this connection (if any).
+ *
+ * Note that this ID may not be the _actual_ identity for the peer if
+ * authentication is not complete.
+ **/
+const struct ed25519_public_key_t *
+connection_or_get_alleged_ed25519_id(const or_connection_t *conn)
+{
+  if (conn && conn->chan) {
+    const channel_t *chan = NULL;
+    chan = TLS_CHAN_TO_BASE(conn->chan);
+    if (!ed25519_public_key_is_zero(&chan->ed25519_identity)) {
+      return &chan->ed25519_identity;
+    }
+  }
+
+  return NULL;
 }
 
 /**************************************************************/
@@ -394,7 +415,7 @@ connection_or_state_publish(const or_connection_t *conn, uint8_t state)
  * be notified.
  */
 
-MOCK_IMPL(STATIC void,
+MOCK_IMPL(void,
 connection_or_change_state,(or_connection_t *conn, uint8_t state))
 {
   tor_assert(conn);
@@ -546,11 +567,6 @@ connection_or_reached_eof(or_connection_t *conn)
 int
 connection_or_process_inbuf(or_connection_t *conn)
 {
-  /** Don't let the inbuf of a nonopen OR connection grow beyond this many
-   * bytes: it's either a broken client, a non-Tor client, or a DOS
-   * attempt. */
-#define MAX_OR_INBUF_WHEN_NONOPEN 0
-
   int ret = 0;
   tor_assert(conn);
 
@@ -561,6 +577,15 @@ connection_or_process_inbuf(or_connection_t *conn)
       /* start TLS after handshake completion, or deal with error */
       if (ret == 1) {
         tor_assert(TO_CONN(conn)->proxy_state == PROXY_CONNECTED);
+        if (buf_datalen(conn->base_.inbuf) != 0) {
+          log_fn(LOG_PROTOCOL_WARN, LD_NET, "Found leftover (%d bytes) "
+                 "when transitioning from PROXY_HANDSHAKING state on %s: "
+                 "closing.",
+                 (int)buf_datalen(conn->base_.inbuf),
+                 connection_describe(TO_CONN(conn)));
+          connection_or_close_for_error(conn, 0);
+          return -1;
+        }
         if (connection_tls_start_handshake(conn, 0) < 0)
           ret = -1;
         /* Touch the channel's active timestamp if there is one */
@@ -581,14 +606,12 @@ connection_or_process_inbuf(or_connection_t *conn)
       break; /* don't do anything */
   }
 
-  /* This check was necessary with 0.2.2, when the TLS_SERVER_RENEGOTIATING
-   * check would otherwise just let data accumulate.  It serves no purpose
-   * in 0.2.3.
-   *
-   * XXXX Remove this check once we verify that the above paragraph is
-   * 100% true. */
-  if (buf_datalen(conn->base_.inbuf) > MAX_OR_INBUF_WHEN_NONOPEN) {
-    log_fn(LOG_PROTOCOL_WARN, LD_NET, "Accumulated too much data (%d bytes) "
+  /* This check makes sure that we don't have any data on the inbuf if we're
+   * doing our TLS handshake: if we did, they were probably put there by a
+   * SOCKS proxy trying to trick us into accepting unauthenticated data.
+   */
+  if (buf_datalen(conn->base_.inbuf) != 0) {
+    log_fn(LOG_PROTOCOL_WARN, LD_NET, "Accumulated data (%d bytes) "
            "on non-open %s; closing.",
            (int)buf_datalen(conn->base_.inbuf),
            connection_describe(TO_CONN(conn)));
@@ -664,6 +687,11 @@ connection_or_finished_flushing(or_connection_t *conn)
       /* PROXY_HAPROXY gets connected by receiving an ack. */
       if (conn->proxy_type == PROXY_HAPROXY) {
         tor_assert(TO_CONN(conn)->proxy_state == PROXY_HAPROXY_WAIT_FOR_FLUSH);
+        IF_BUG_ONCE(buf_datalen(TO_CONN(conn)->inbuf) != 0) {
+          /* This should be impossible; we're not even reading. */
+          connection_or_close_for_error(conn, 0);
+          return -1;
+        }
         TO_CONN(conn)->proxy_state = PROXY_CONNECTED;
 
         if (connection_tls_start_handshake(conn, 0) < 0) {
@@ -1952,7 +1980,8 @@ connection_or_client_learned_peer_id(or_connection_t *conn,
                                                    conn->identity_digest);
     const int is_authority_fingerprint = router_digest_is_trusted_dir(
                                                    conn->identity_digest);
-    const int non_anonymous_mode = rend_non_anonymous_mode_enabled(options);
+    const int non_anonymous_mode =
+      hs_service_non_anonymous_mode_enabled(options);
     int severity;
     const char *extra_log = "";
 

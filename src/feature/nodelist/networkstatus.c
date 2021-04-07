@@ -1,7 +1,7 @@
 /* Copyright (c) 2001 Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -240,7 +240,7 @@ networkstatus_get_cache_fname,(int flav,
 }
 
 /**
- * Read and and return the cached consensus of type <b>flavorname</b>.  If
+ * Read and return the cached consensus of type <b>flavorname</b>.  If
  * <b>unverified</b> is false, get the one we haven't verified. Return NULL if
  * the file isn't there. */
 static tor_mmap_t *
@@ -2723,6 +2723,13 @@ networkstatus_check_required_protocols(const networkstatus_t *ns,
   const bool consensus_postdates_this_release =
     ns->valid_after >= tor_get_approx_release_date();
 
+  if (! consensus_postdates_this_release) {
+    // We can't meaningfully warn about this case: This consensus is from
+    // before we were released, so whatever is says about required or
+    // recommended versions may no longer be true.
+    return 0;
+  }
+
   tor_assert(warning_out);
 
   if (client_mode) {
@@ -2740,7 +2747,7 @@ networkstatus_check_required_protocols(const networkstatus_t *ns,
                  "%s on the Tor network. The missing protocols are: %s",
                  func, missing);
     tor_free(missing);
-    return consensus_postdates_this_release ? 1 : 0;
+    return 1;
   }
 
   if (! protover_all_supported(recommended, &missing)) {

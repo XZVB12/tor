@@ -1,6 +1,6 @@
 /* Copyright (c) 2003-2004, Roger Dingledine
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -41,6 +41,7 @@ void transport_free_(transport_t *transport);
 #define transport_free(tr) FREE_AND_NULL(transport_t, transport_free_, (tr))
 
 MOCK_DECL(transport_t*, transport_get_by_name, (const char *name));
+bool managed_proxy_has_transport(const char *transport_name);
 
 MOCK_DECL(void, pt_kickstart_proxy,
           (const smartlist_t *transport_list, char **proxy_argv,

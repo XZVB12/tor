@@ -1,9 +1,9 @@
-/* Copyright (c) 2020, The Tor Project, Inc. */
+/* Copyright (c) 2020-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
  * \file trace_stub.c
- * \brief Stub declaratinos for use when trace library is disabled.
+ * \brief Stub declarations for use when trace library is disabled.
  **/
 
 #include "lib/subsys/subsys.h"

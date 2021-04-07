@@ -1,7 +1,7 @@
 /* Copyright (c) 2001, Matej Pfajfar.
  * Copyright (c) 2001-2004, Roger Dingledine.
  * Copyright (c) 2004-2006, Roger Dingledine, Nick Mathewson.
- * Copyright (c) 2007-2020, The Tor Project, Inc. */
+ * Copyright (c) 2007-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -784,7 +784,7 @@ logs_free_all(void)
 
 /** Flush the signal-safe log files.
  *
- * This function is safe to call from a signal handler. It is currenly called
+ * This function is safe to call from a signal handler. It is currently called
  * by the BUG() macros, when terminating the process on an abnormal condition.
  */
 void

@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, The Tor Project, Inc. */
+/* Copyright (c) 2020-2021, The Tor Project, Inc. */
 /* See LICENSE for licensing information */
 
 /**
@@ -17,7 +17,7 @@
 /** Method used to resolved an address. In other words, how was the address
  * discovered by tor. */
 typedef enum {
-  /* Default value. Indiate that no method found the address. */
+  /* Default value. Indicate that no method found the address. */
   RESOLVED_ADDR_NONE              = 0,
   /* Found from the "Address" configuration option. */
   RESOLVED_ADDR_CONFIGURED        = 1,
@@ -61,7 +61,7 @@ void resolve_addr_reset_suggested(int family);
 
 #endif /* TOR_UNIT_TESTS */
 
-#endif /* RESOLVE_ADDR_PRIVATE */
+#endif /* defined(RESOLVE_ADDR_PRIVATE) */
 
-#endif /* TOR_CONFIG_RESOLVE_ADDR_H */
+#endif /* !defined(TOR_CONFIG_RESOLVE_ADDR_H) */
 
